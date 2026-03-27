@@ -13,6 +13,7 @@ import json
 import time
 from datetime import datetime
 
+import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
@@ -20,6 +21,25 @@ mcp = FastMCP("news-sentiment", instructions="News search, sentiment analysis, f
 
 _cache: dict[str, tuple[float, str]] = {}
 NEWS_CACHE_TTL = 900  # 15 minutes
+
+# Circuit breaker state
+_failures: int = 0
+_last_failure: float = 0.0
+
+
+def _safe_fetch(ticker_symbol: str, period: str = "3mo") -> pd.DataFrame:
+    """Fetch yfinance history with circuit breaker."""
+    global _failures, _last_failure
+    if _failures >= 5 and time.time() - _last_failure < 120:
+        return pd.DataFrame()
+    try:
+        hist = yf.Ticker(ticker_symbol).history(period=period)
+        _failures = 0
+        return hist
+    except Exception:
+        _failures += 1
+        _last_failure = time.time()
+        return pd.DataFrame()
 
 
 def _get_cached(key: str) -> str | None:
@@ -162,7 +182,7 @@ def get_fear_greed_index() -> str:
     scores: list[float] = []
 
     # VIX
-    vix_hist = yf.Ticker("^VIX").history(period="3mo")
+    vix_hist = _safe_fetch("^VIX", period="3mo")
     if not vix_hist.empty:
         vix = float(vix_hist["Close"].iloc[-1])
         vix_score = max(0, min(100, (30 - vix) / 20 * 100))
@@ -174,7 +194,7 @@ def get_fear_greed_index() -> str:
         scores.append(vix_score)
 
     # SPX momentum
-    spx_hist = yf.Ticker("^GSPC").history(period="3mo")
+    spx_hist = _safe_fetch("^GSPC", period="3mo")
     if not spx_hist.empty and len(spx_hist) >= 50:
         px = float(spx_hist["Close"].iloc[-1])
         sma = float(spx_hist["Close"].rolling(50).mean().iloc[-1])
@@ -188,7 +208,7 @@ def get_fear_greed_index() -> str:
         scores.append(mom_score)
 
     # Safe haven
-    gold_hist = yf.Ticker("GC=F").history(period="3mo")
+    gold_hist = _safe_fetch("GC=F", period="3mo")
     if not gold_hist.empty and not spx_hist.empty and len(gold_hist) > 22 and len(spx_hist) > 22:
         g30 = (float(gold_hist["Close"].iloc[-1]) / float(gold_hist["Close"].iloc[-22]) - 1) * 100
         s30 = (float(spx_hist["Close"].iloc[-1]) / float(spx_hist["Close"].iloc[-22]) - 1) * 100
@@ -241,7 +261,7 @@ def get_positioning(asset: str) -> str:
     positions: list[dict[str, object]] = []
 
     for symbol, name in etfs[:3]:
-        hist = yf.Ticker(symbol).history(period="3mo")
+        hist = _safe_fetch(symbol, period="3mo")
         if hist.empty:
             continue
         recent_vol = float(hist["Volume"].tail(5).mean())

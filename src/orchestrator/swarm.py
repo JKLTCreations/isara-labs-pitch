@@ -1,6 +1,7 @@
-"""Swarm orchestrator — full pipeline: parallel analysis → debate → aggregation.
+"""Swarm orchestrator — full pipeline: parallel analysis -> debate -> aggregation.
 
 All runs, signals, debates, and forecasts are persisted to SQLite.
+Includes structured logging, graceful degradation, and token cost tracking.
 """
 
 from __future__ import annotations
@@ -14,10 +15,14 @@ from agents import Agent, Runner
 from src.agents.aggregator import build_aggregator_prompt, create_aggregator_agent
 from src.agents.registry import create_swarm
 from src.config import get_config
+from src.logging import get_logger
 from src.orchestrator.debate import DebateRound, run_debate_round
 from src.orchestrator.rounds import convergence_detected
 from src.persistence import database as db
+from src.resilience import TokenUsage, validate_asset, validate_horizon
 from src.signals.schema import Forecast, Signal
+
+log = get_logger()
 
 
 @dataclass
@@ -32,6 +37,8 @@ class SwarmResult:
     forecast: Forecast | None = None
     errors: list[str] = field(default_factory=list)
     elapsed_seconds: float = 0.0
+    token_usage: TokenUsage | None = None
+    degraded: bool = False  # True if some agents failed but run continued
 
 
 async def _run_single_agent(
@@ -39,6 +46,7 @@ async def _run_single_agent(
     asset: str,
     horizon: str,
     timeout: int,
+    token_usage: TokenUsage | None = None,
 ) -> Signal | str:
     """Run a single agent with timeout. Returns Signal or error string."""
     prompt = (
@@ -46,16 +54,56 @@ async def _run_single_agent(
         f"Use your tools to fetch current data, then emit a structured Signal. "
         f"Set agent_id to '{agent.name}'."
     )
+    agent_start = time.monotonic()
     try:
         result = await asyncio.wait_for(
             Runner.run(agent, input=prompt),
             timeout=timeout,
         )
         signal = result.final_output_as(agent.output_type)
+        elapsed = round(time.monotonic() - agent_start, 2)
+
+        # Track token usage if available
+        if token_usage and hasattr(result, "raw_responses"):
+            prompt_tokens = sum(
+                getattr(r, "usage", None).prompt_tokens
+                for r in result.raw_responses
+                if getattr(r, "usage", None)
+            )
+            completion_tokens = sum(
+                getattr(r, "usage", None).completion_tokens
+                for r in result.raw_responses
+                if getattr(r, "usage", None)
+            )
+            token_usage.record(agent.name, "analysis", prompt_tokens, completion_tokens)
+
+        log.info(
+            "agent_complete",
+            agent_id=agent.name,
+            direction=signal.direction,
+            confidence=signal.confidence,
+            evidence_count=len(signal.evidence),
+            elapsed_seconds=elapsed,
+        )
         return signal
     except asyncio.TimeoutError:
+        elapsed = round(time.monotonic() - agent_start, 2)
+        log.warning(
+            "agent_timeout",
+            agent_id=agent.name,
+            timeout=timeout,
+            elapsed_seconds=elapsed,
+        )
         return f"{agent.name}: timed out after {timeout}s"
     except Exception as e:
+        elapsed = round(time.monotonic() - agent_start, 2)
+        log.error(
+            "agent_error",
+            agent_id=agent.name,
+            error=str(e),
+            error_type=type(e).__name__,
+            elapsed_seconds=elapsed,
+        )
         return f"{agent.name}: {type(e).__name__}: {e}"
 
 
@@ -138,7 +186,10 @@ async def run_swarm(
     skip_aggregation: bool = False,
     persist: bool = True,
 ) -> SwarmResult:
-    """Run the full swarm pipeline: parallel analysis → debate → aggregation.
+    """Run the full swarm pipeline: parallel analysis -> debate -> aggregation.
+
+    Graceful degradation: if some agents fail, the swarm continues with
+    the remaining signals (minimum 2 required for debate).
 
     Args:
         asset: Asset to forecast (e.g., 'XAUUSD', 'CL1', 'SPX').
@@ -152,8 +203,19 @@ async def run_swarm(
         SwarmResult with signals, debate transcript, and final forecast.
     """
     config = get_config()
-    agents = create_swarm(agent_ids)
     timeout = config.agent_timeout_seconds
+
+    # Input validation
+    asset_err = validate_asset(asset)
+    if asset_err:
+        return SwarmResult(asset=asset, horizon=horizon, errors=[asset_err])
+
+    horizon_err = validate_horizon(horizon)
+    if horizon_err:
+        return SwarmResult(asset=asset, horizon=horizon, errors=[horizon_err])
+
+    agents = create_swarm(agent_ids)
+    token_usage = TokenUsage(run_id="")
 
     # Initialize DB and create run record
     run_id = ""
@@ -161,12 +223,23 @@ async def run_swarm(
         await db.init_db()
         run_id = await db.create_run(asset, horizon, len(agents))
 
+    token_usage.run_id = run_id
     start = time.monotonic()
     errors: list[str] = []
+    degraded = False
+
+    log.info(
+        "swarm_started",
+        run_id=run_id,
+        asset=asset,
+        horizon=horizon,
+        agent_count=len(agents),
+        phase="analysis",
+    )
 
     # === Phase 1: Independent Analysis (parallel) ===
     results = await asyncio.gather(
-        *[_run_single_agent(agent, asset, horizon, timeout) for agent in agents],
+        *[_run_single_agent(agent, asset, horizon, timeout, token_usage) for agent in agents],
         return_exceptions=True,
     )
 
@@ -179,23 +252,47 @@ async def run_swarm(
         elif isinstance(result, Exception):
             errors.append(f"Unexpected error: {result}")
 
+    # Graceful degradation: some agents failed but we got enough
+    if len(signals) < len(agents):
+        degraded = True
+        log.warning(
+            "swarm_degraded",
+            run_id=run_id,
+            expected_agents=len(agents),
+            actual_signals=len(signals),
+            failed_agents=len(agents) - len(signals),
+            phase="analysis",
+        )
+
     # Persist initial signals
     if persist and signals:
         await _persist_signals(run_id, signals, phase="initial")
+
+    log.info(
+        "analysis_complete",
+        run_id=run_id,
+        signal_count=len(signals),
+        error_count=len(errors),
+        phase="analysis",
+    )
 
     # Need at least 2 signals to debate
     if len(signals) < 2 or skip_debate:
         elapsed = time.monotonic() - start
         if persist:
-            await db.complete_run(run_id, "completed", 0, elapsed)
+            status = "completed" if signals else "failed"
+            await db.complete_run(run_id, status, 0, elapsed)
         return SwarmResult(
             run_id=run_id, asset=asset, horizon=horizon,
             signals=signals, errors=errors, elapsed_seconds=round(elapsed, 2),
+            token_usage=token_usage, degraded=degraded,
         )
 
     # === Phase 2: Adversarial Debate ===
     debate_rounds: list[DebateRound] = []
     current_signals = signals
+
+    log.info("debate_started", run_id=run_id, max_rounds=config.max_debate_rounds, phase="debate")
 
     for round_num in range(1, config.max_debate_rounds + 1):
         try:
@@ -207,24 +304,43 @@ async def run_swarm(
             )
             debate_rounds.append(debate_round)
 
+            log.info(
+                "debate_round_complete",
+                run_id=run_id,
+                round=round_num,
+                challenges=len(debate_round.challenges),
+                revisions=len(debate_round.revisions),
+                phase="debate",
+            )
+
             # Persist debate
             if persist:
                 await _persist_debate(run_id, debate_round)
                 await _persist_signals(run_id, debate_round.revised_signals, phase=f"debate_r{round_num}")
 
             if convergence_detected(current_signals, debate_round.revised_signals):
+                log.info("convergence_detected", run_id=run_id, round=round_num, phase="debate")
                 current_signals = debate_round.revised_signals
                 break
 
             current_signals = debate_round.revised_signals
         except Exception as e:
+            log.error(
+                "debate_round_failed",
+                run_id=run_id,
+                round=round_num,
+                error=str(e),
+                phase="debate",
+            )
             errors.append(f"Debate round {round_num} failed: {e}")
+            # Graceful fallback: skip to aggregation with current signals
             break
 
     # === Phase 3: Aggregation ===
     forecast: Forecast | None = None
 
     if not skip_aggregation:
+        log.info("aggregation_started", run_id=run_id, signal_count=len(current_signals), phase="aggregation")
         try:
             aggregator = create_aggregator_agent()
             aggregator_prompt = build_aggregator_prompt(current_signals, debate_rounds)
@@ -235,11 +351,41 @@ async def run_swarm(
             )
             forecast = agg_result.final_output_as(Forecast)
 
+            # Track aggregator tokens
+            if hasattr(agg_result, "raw_responses"):
+                prompt_tokens = sum(
+                    getattr(r, "usage", None).prompt_tokens
+                    for r in agg_result.raw_responses
+                    if getattr(r, "usage", None)
+                )
+                completion_tokens = sum(
+                    getattr(r, "usage", None).completion_tokens
+                    for r in agg_result.raw_responses
+                    if getattr(r, "usage", None)
+                )
+                token_usage.record("aggregator", "aggregation", prompt_tokens, completion_tokens)
+
             if persist and forecast:
                 await _persist_forecast(run_id, forecast)
+
+            log.info(
+                "aggregation_complete",
+                run_id=run_id,
+                direction=forecast.direction,
+                conviction=forecast.conviction,
+                consensus_strength=forecast.consensus_strength,
+                phase="aggregation",
+            )
         except asyncio.TimeoutError:
+            log.error("aggregator_timeout", run_id=run_id, timeout=timeout, phase="aggregation")
             errors.append("Aggregator timed out")
         except Exception as e:
+            log.error(
+                "aggregation_failed",
+                run_id=run_id,
+                error=str(e),
+                phase="aggregation",
+            )
             errors.append(f"Aggregation failed: {e}")
 
     elapsed = time.monotonic() - start
@@ -248,8 +394,35 @@ async def run_swarm(
         status = "completed" if forecast else "partial"
         await db.complete_run(run_id, status, len(debate_rounds), elapsed)
 
+    # Cost tracking
+    cost = token_usage.estimated_cost_usd
+    if cost > config.max_cost_per_run_usd:
+        log.warning(
+            "cost_threshold_exceeded",
+            run_id=run_id,
+            cost_usd=round(cost, 4),
+            threshold_usd=config.max_cost_per_run_usd,
+            total_tokens=token_usage.total_tokens,
+        )
+
+    log.info(
+        "swarm_complete",
+        run_id=run_id,
+        asset=asset,
+        horizon=horizon,
+        status="completed" if forecast else "partial",
+        signal_count=len(current_signals),
+        debate_rounds=len(debate_rounds),
+        error_count=len(errors),
+        elapsed_seconds=round(elapsed, 2),
+        total_tokens=token_usage.total_tokens,
+        estimated_cost_usd=round(cost, 4),
+        degraded=degraded,
+    )
+
     return SwarmResult(
         run_id=run_id, asset=asset, horizon=horizon,
         signals=current_signals, debate_rounds=debate_rounds,
         forecast=forecast, errors=errors, elapsed_seconds=round(elapsed, 2),
+        token_usage=token_usage, degraded=degraded,
     )

@@ -2,6 +2,8 @@
 
 Agents review each other's signals, issue challenges, and revise
 or defend their positions. This is what prevents groupthink.
+
+Includes structured logging and graceful degradation on failures.
 """
 
 from __future__ import annotations
@@ -13,7 +15,10 @@ from dataclasses import dataclass, field
 from agents import Agent, Runner
 
 from src.config import get_config
+from src.logging import get_logger
 from src.signals.schema import Challenge, Revision, Signal
+
+log = get_logger()
 
 CHALLENGER_PROMPT_VERSION = "1.0.0"
 
@@ -99,8 +104,29 @@ async def _generate_challenge(
             Runner.run(challenge_agent, input=prompt),
             timeout=timeout,
         )
-        return result.final_output_as(Challenge)
-    except (asyncio.TimeoutError, Exception):
+        challenge = result.final_output_as(Challenge)
+        log.debug(
+            "challenge_generated",
+            challenger=own_signal.agent_id,
+            target=challenge.target_id,
+            phase="debate",
+        )
+        return challenge
+    except asyncio.TimeoutError:
+        log.warning(
+            "challenge_timeout",
+            agent_id=own_signal.agent_id,
+            timeout=timeout,
+            phase="debate",
+        )
+        return None
+    except Exception as e:
+        log.warning(
+            "challenge_failed",
+            agent_id=own_signal.agent_id,
+            error=str(e),
+            phase="debate",
+        )
         return None
 
 
@@ -135,8 +161,30 @@ async def _generate_revision(
             Runner.run(revision_agent, input=prompt),
             timeout=timeout,
         )
-        return result.final_output_as(Revision)
-    except (asyncio.TimeoutError, Exception):
+        revision = result.final_output_as(Revision)
+        action = "revised" if revision.revised_signal else "defended"
+        log.debug(
+            "revision_generated",
+            agent_id=original_signal.agent_id,
+            action=action,
+            phase="debate",
+        )
+        return revision
+    except asyncio.TimeoutError:
+        log.warning(
+            "revision_timeout",
+            agent_id=original_signal.agent_id,
+            timeout=timeout,
+            phase="debate",
+        )
+        return None
+    except Exception as e:
+        log.warning(
+            "revision_failed",
+            agent_id=original_signal.agent_id,
+            error=str(e),
+            phase="debate",
+        )
         return None
 
 
@@ -152,6 +200,9 @@ async def run_debate_round(
     2. Challenged agents revise or defend.
     3. Returns updated signals.
 
+    Graceful degradation: if some challenges/revisions fail,
+    the round continues with whatever succeeded.
+
     Args:
         agents: The specialist agents.
         signals: Current signals from each agent.
@@ -164,6 +215,13 @@ async def run_debate_round(
     # Build agent lookup
     agent_map: dict[str, Agent] = {a.name: a for a in agents}
     signal_map: dict[str, Signal] = {s.agent_id: s for s in signals}
+
+    log.debug(
+        "debate_round_started",
+        round=round_number,
+        agents=len(agents),
+        phase="debate",
+    )
 
     # Phase 1: All agents generate challenges in parallel
     challenge_tasks = []
@@ -178,6 +236,19 @@ async def run_debate_round(
     challenges: list[Challenge] = [
         c for c in challenge_results if isinstance(c, Challenge)
     ]
+
+    if not challenges:
+        log.warning(
+            "no_challenges_produced",
+            round=round_number,
+            phase="debate",
+        )
+        return DebateRound(
+            round_number=round_number,
+            challenges=[],
+            revisions=[],
+            revised_signals=list(signals),
+        )
 
     # Phase 2: Challenged agents respond
     # Group challenges by target
