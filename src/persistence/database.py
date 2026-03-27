@@ -323,17 +323,118 @@ async def get_run(run_id: str) -> dict | None:
         return dict(row[0])
 
 
-async def list_runs(asset: str | None = None, limit: int = 50) -> list[dict]:
-    """List forecast runs, optionally filtered by asset."""
+async def list_runs(
+    asset: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    status: str | None = None,
+) -> list[dict]:
+    """List forecast runs, optionally filtered by asset and status."""
     async with aiosqlite.connect(str(DB_PATH)) as db:
         db.row_factory = aiosqlite.Row
+        conditions: list[str] = []
+        params: list[object] = []
         if asset:
+            conditions.append("asset=?")
+            params.append(asset)
+        if status:
+            conditions.append("status=?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM forecast_runs {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = await db.execute_fetchall(query, tuple(params))
+        return [dict(r) for r in rows]
+
+
+async def count_runs(asset: str | None = None, status: str | None = None) -> int:
+    """Count forecast runs matching filters."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        conditions: list[str] = []
+        params: list[object] = []
+        if asset:
+            conditions.append("asset=?")
+            params.append(asset)
+        if status:
+            conditions.append("status=?")
+            params.append(status)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        row = await db.execute_fetchall(
+            f"SELECT COUNT(*) FROM forecast_runs {where}", tuple(params)
+        )
+        return int(row[0][0])
+
+
+async def get_forecast(run_id: str) -> dict | None:
+    """Fetch the forecast for a given run."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            "SELECT * FROM forecasts WHERE run_id=?", (run_id,)
+        )
+        if not rows:
+            return None
+        return dict(rows[0])
+
+
+async def get_signals(run_id: str, agent_id: str | None = None) -> list[dict]:
+    """Fetch signals for a run, optionally filtered by agent."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        if agent_id:
             rows = await db.execute_fetchall(
-                "SELECT * FROM forecast_runs WHERE asset=? ORDER BY created_at DESC LIMIT ?",
-                (asset, limit),
+                "SELECT * FROM signals WHERE run_id=? AND agent_id=? ORDER BY created_at",
+                (run_id, agent_id),
             )
         else:
             rows = await db.execute_fetchall(
-                "SELECT * FROM forecast_runs ORDER BY created_at DESC LIMIT ?", (limit,)
+                "SELECT * FROM signals WHERE run_id=? ORDER BY created_at",
+                (run_id,),
             )
+        return [dict(r) for r in rows]
+
+
+async def get_debates(run_id: str) -> list[dict]:
+    """Fetch all debate exchanges for a run."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            "SELECT * FROM debates WHERE run_id=? ORDER BY round_number, created_at",
+            (run_id,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def get_calibration_for_run(run_id: str) -> list[dict]:
+    """Fetch calibration entries for a run."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            "SELECT * FROM calibration_log WHERE run_id=? ORDER BY agent_id",
+            (run_id,),
+        )
+        return [dict(r) for r in rows]
+
+
+async def list_forecasts(
+    asset: str | None = None,
+    conviction: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """List forecasts with optional filters."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        conditions: list[str] = []
+        params: list[object] = []
+        if asset:
+            conditions.append("asset=?")
+            params.append(asset)
+        if conviction:
+            conditions.append("conviction=?")
+            params.append(conviction)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"SELECT * FROM forecasts {where} ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = await db.execute_fetchall(query, tuple(params))
         return [dict(r) for r in rows]
