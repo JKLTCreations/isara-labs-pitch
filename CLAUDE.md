@@ -428,94 +428,277 @@ AGENT_TIMEOUT_SECONDS=60
 
 ## Development Phases
 
-### PHASES 1–5: COMPLETED
+### Phase 1 — Foundation: Signal Protocol & Single Agent (Days 1–3)
 
-> Phases 1–5 are fully implemented and tested. **Read the code before starting Phase 6.**
+**Goal:** Establish the core data contracts and prove a single agent can ingest real data and emit a valid, structured signal. Nothing works without this foundation.
 
----
+**Build:**
+- `src/signals/schema.py` — `Signal`, `Evidence`, `Forecast` Pydantic models with full validation (confidence clamped 0–1, non-empty evidence, valid horizons)
+- `src/config.py` — Environment config loader, API key validation, app settings
+- `src/agents/quant.py` — The Quantitative Analyst as the first agent (chosen because it depends on the most concrete, testable data — prices and indicators)
+- `src/tools/market_data.py` — `get_price_data()` and `get_technical_indicators()` using yfinance (free, no API key needed to start)
+- `scripts/run_forecast.py` — Bare-bones CLI: `python scripts/run_forecast.py --asset XAUUSD --horizon 30d`
+- `pyproject.toml` — Project config with `openai-agents`, `pydantic`, `yfinance`, `python-dotenv`
+- `.env.example` — Template with all required keys
 
-### Onboarding: Read These Files First
-
-Before writing any code, you MUST read and understand the existing codebase. Phases 1–5 built the entire backend engine. Your job (Phases 6–10) is to expose it, visualize it, harden it, and extend it.
-
-**Start here — read in this order:**
-
-1. **`src/signals/schema.py`** — The data contracts everything is built on. `Signal`, `Evidence`, `Challenge`, `Revision`, `Forecast`. Every field, every constraint. This is the language the system speaks.
-
-2. **`src/agents/quant.py`** — Read ONE agent end-to-end to understand the pattern: system prompt with `PROMPT_VERSION`, `create_*_agent()` factory function, `Agent()` with `output_type=Signal`. Then skim `geopolitical.py`, `macro.py`, `sentiment.py` — same pattern, different tools and biases.
-
-3. **`src/agents/aggregator.py`** — The CIO agent. Note that it has NO tools — pure synthesis. Read `build_aggregator_prompt()` to see how signals + debate context are assembled.
-
-4. **`src/agents/registry.py`** — How agents are created and composed. `create_swarm()` returns a list of agents. `AGENT_FACTORIES` dict is the registry. Phase 9 will extend this.
-
-5. **`src/orchestrator/swarm.py`** — **THE CORE FILE.** Read every line. This is the full pipeline:
-   - `run_swarm()` orchestrates: parallel analysis → debate → aggregation
-   - `_run_single_agent()` handles per-agent timeout and error catching
-   - `_persist_signals()`, `_persist_debate()`, `_persist_forecast()` save everything to SQLite
-   - `SwarmResult` dataclass is what the CLI and your API will consume
-   - Note the `persist=True` flag and `run_id` tracking
-
-6. **`src/orchestrator/debate.py`** — How agents challenge each other. `run_debate_round()` is the key function. Understand the flow: generate challenges in parallel → group by target → generate revisions in parallel → merge into updated signals.
-
-7. **`src/orchestrator/rounds.py`** — Convergence detection: `convergence_detected()` checks direction agreement (≥75%) AND confidence stability (no agent shifted >0.1). `compute_consensus_strength()` produces a 0–1 score.
-
-8. **`src/signals/aggregation.py`** — The math behind aggregation: `aggregate_direction()` (confidence-weighted vote), `compute_confidence_interval()` (spread-based), `determine_conviction()`, `find_dissenting_view()`, `extract_key_drivers()`, `extract_key_risks()`.
-
-9. **`src/mcp/`** — Three MCP servers (`market_server.py`, `fred_server.py`, `news_server.py`). Each has its own cache TTL. `src/tools/` modules are thin wrappers that delegate to these. `src/mcp/client.py` re-exports everything.
-
-10. **`src/persistence/database.py`** — SQLite schema with 5 tables: `forecast_runs`, `signals`, `debates`, `forecasts`, `calibration_log`. All functions are async. Key functions: `create_run()`, `save_signal()`, `save_debate()`, `save_forecast()`, `save_calibration_entry()`, `score_calibration()`, `get_agent_calibration()`, `list_runs()`, `get_run()`.
-
-11. **`src/signals/calibration.py`** — `get_calibration_profile()` returns per-agent accuracy by confidence bucket. `get_swarm_calibration_weights()` returns a dict of agent_id → weight.
-
-12. **`src/config.py`** — `get_config()` singleton. All env vars. `agent_model` = `gpt-4.1`, `fast_model` = `gpt-4.1-mini`.
-
-13. **`scripts/run_forecast.py`** — The CLI. Shows how `run_swarm()` is called and how `SwarmResult` is consumed. Your API endpoints will do the same thing.
-
-14. **`scripts/backtest.py`** and **`scripts/seed_data.py`** — Skim these. The seed script is useful for populating the DB during frontend development.
-
-15. **`tests/`** — 37 tests, all passing. Run `python -m pytest tests/ -v` to verify before making any changes.
-
-**After reading, run this to verify the full system:**
+**Definition of Done:**
 ```bash
-# Install deps
-pip install -e ".[dev]"
+python scripts/run_forecast.py --asset XAUUSD --horizon 30d
+# → Prints a valid Signal JSON with direction, confidence, and ≥2 evidence items
+# → Evidence references real price data with timestamps
+# → Entire run completes in <30 seconds
+```
 
-# Run tests (37 should pass)
-python -m pytest tests/ -v
+**Key Decisions:**
+- Use OpenAI Structured Outputs from day 1 — never allow free-text signals, even in development
+- yfinance for initial market data (free), swap to Alpha Vantage later for production reliability
+- The quant agent is the canary — if it can't produce a grounded signal, the architecture is wrong
 
-# Seed sample data
-python -m scripts.seed_data
-
-# Verify DB
-python -c "import sqlite3; conn = sqlite3.connect('data/forecasts.db'); [print(f'  {t}: {conn.execute(f\"SELECT COUNT(*) FROM {t}\").fetchone()[0]} rows') for t in ['forecast_runs','signals','debates','forecasts','calibration_log']]"
+**Files:**
+```
+src/signals/schema.py          ← NEW
+src/config.py                  ← NEW
+src/agents/__init__.py         ← NEW
+src/agents/quant.py            ← NEW
+src/tools/__init__.py          ← NEW
+src/tools/market_data.py       ← NEW
+scripts/run_forecast.py        ← NEW
+pyproject.toml                 ← NEW
+.env.example                   ← NEW
 ```
 
 ---
 
-### What's Already Built (Phases 1–5)
+### Phase 2 — The Specialist Swarm (Days 4–7)
 
-| Layer | Status | Key Files |
-|-------|--------|-----------|
-| Signal Protocol | DONE | `src/signals/schema.py` — Signal, Evidence, Challenge, Revision, Forecast |
-| 4 Specialist Agents | DONE | `src/agents/{quant,geopolitical,macro,sentiment}.py` |
-| Aggregator Agent | DONE | `src/agents/aggregator.py` — CIO synthesis agent |
-| Agent Registry | DONE | `src/agents/registry.py` — factory + `create_swarm()` |
-| Swarm Orchestrator | DONE | `src/orchestrator/swarm.py` — parallel analysis → debate → aggregation |
-| Adversarial Debate | DONE | `src/orchestrator/debate.py` — challenge/revision protocol |
-| Convergence Detection | DONE | `src/orchestrator/rounds.py` — direction + confidence stability |
-| Signal Aggregation | DONE | `src/signals/aggregation.py` — weighted voting, CI, conviction |
-| MCP Market Server | DONE | `src/mcp/market_server.py` — price, technicals, vol, correlation (1min cache) |
-| MCP FRED Server | DONE | `src/mcp/fred_server.py` — rates, inflation, economic series (1hr cache) |
-| MCP News Server | DONE | `src/mcp/news_server.py` — search, sentiment, fear/greed, positioning (15min cache) |
-| Tool Wrappers | DONE | `src/tools/` — thin delegates to MCP servers |
-| SQLite Persistence | DONE | `src/persistence/database.py` — 5 tables, full async CRUD |
-| Calibration Tracking | DONE | `src/signals/calibration.py` — per-agent accuracy by bucket |
-| CLI | DONE | `scripts/run_forecast.py` — full pipeline with `--verbose`, `--no-debate`, `--agents` |
-| Backtesting | DONE | `scripts/backtest.py` — scorecard with Brier, per-agent, per-conviction |
-| Seed Data | DONE | `scripts/seed_data.py` — populates DB with 5 sample runs |
-| Tests | DONE | 37 tests passing (schema, aggregation, convergence, persistence) |
+**Goal:** Build all four specialist agents, each with distinct tools and cognitive identity, running in parallel on the same forecast request.
 
-**The swarm engine is complete. Your job is to expose it, visualize it, harden it, and extend it.**
+**Build:**
+- `src/agents/geopolitical.py` — Geopolitical analyst with news search and conflict monitoring tools
+- `src/agents/macro.py` — Macro-economics analyst with FRED integration
+- `src/agents/sentiment.py` — Sentiment analyst with news sentiment and social tools
+- `src/agents/registry.py` — Agent factory that instantiates all specialists from config
+- `src/tools/economic_indicators.py` — FRED API wrapper (`get_fred_series`, `get_inflation_breakdown`)
+- `src/tools/news.py` — NewsAPI or Tavily wrapper (`search_news`, `get_news_sentiment`)
+- `src/tools/sentiment.py` — Social sentiment scoring (`get_fear_greed_index`, `get_social_sentiment`)
+- `src/tools/calendar.py` — Economic event calendar
+- `src/orchestrator/swarm.py` — Parallel agent execution: spawns all 4 agents via `asyncio.gather`, collects signals
+
+**Definition of Done:**
+```bash
+python scripts/run_forecast.py --asset XAUUSD --horizon 30d
+# → 4 signals printed, one per agent
+# → Each signal has distinct evidence sources (no two agents cite the same data)
+# → All 4 agents complete within 60 seconds total (parallel execution)
+# → Each agent's signal reflects its cognitive bias:
+#    - Quant cites price levels and RSI
+#    - Macro cites GDP and rate expectations
+#    - Geopolitical cites news events and risk factors
+#    - Sentiment cites crowd positioning and fear/greed
+```
+
+**Key Decisions:**
+- Agents run fully independently in this phase — no cross-talk yet. This isolates agent quality issues from orchestration issues.
+- Each agent gets a 60-second timeout. If it can't produce a signal in 60s, it's doing too much.
+- The registry pattern allows dynamically enabling/disabling agents by config — foundation for Phase 7's dynamic spawning.
+
+**Files:**
+```
+src/agents/geopolitical.py     ← NEW
+src/agents/macro.py            ← NEW
+src/agents/sentiment.py        ← NEW
+src/agents/registry.py         ← NEW
+src/tools/economic_indicators.py ← NEW
+src/tools/news.py              ← NEW
+src/tools/sentiment.py         ← NEW
+src/tools/calendar.py          ← NEW
+src/orchestrator/__init__.py   ← NEW
+src/orchestrator/swarm.py      ← NEW
+scripts/run_forecast.py        ← MODIFY (use orchestrator instead of single agent)
+```
+
+---
+
+### Phase 3 — Adversarial Debate & Aggregation (Days 8–12)
+
+**Goal:** The hardest phase. Implement the debate protocol that prevents groupthink and the aggregation logic that produces a single consensus forecast. This is what separates "multi-agent" from "multi-prompt."
+
+**Build:**
+- `src/orchestrator/debate.py` — The debate engine:
+  - Round 1: Each agent receives all other signals, writes a structured `Challenge` targeting the signal it most disagrees with
+  - Challenged agents respond with either a `Revision` (updated signal) or a `Defense` (rebuttal with new evidence)
+  - Round 2 (optional): Only triggers if signals still diverge significantly
+- `src/orchestrator/rounds.py` — Convergence detection logic:
+  - Direction convergence: ≥3 of 4 agents agree on direction
+  - Confidence stability: No agent shifted confidence >0.1 since last round
+  - Max rounds hard cap: 2 (never let agents debate forever)
+- `src/signals/aggregation.py` — Confidence-weighted signal combination:
+  - Weighted directional vote (confidence × direction)
+  - Uncertainty quantification from signal dispersion
+  - Disagreement flagging when agents are split 2-2
+- `src/agents/aggregator.py` — The Aggregator agent that receives signals + debate transcript and produces the final `Forecast` object
+
+**New Schemas:**
+```python
+class Challenge(BaseModel):
+    challenger_id: str              # Who is challenging
+    target_id: str                  # Whose signal is being challenged
+    argument: str                   # The specific critique
+    evidence_gap: str               # What data the target agent missed
+    suggested_revision: str         # What the challenger thinks should change
+
+class Revision(BaseModel):
+    agent_id: str
+    original_signal: Signal
+    revised_signal: Signal
+    revision_reason: str            # What convinced them to change
+    # OR
+    defense: str | None             # Why they're standing firm
+```
+
+**Definition of Done:**
+```bash
+python scripts/run_forecast.py --asset XAUUSD --horizon 30d --verbose
+# → Phase 1: 4 independent signals
+# → Phase 2: Debate round with ≥2 challenges issued
+# → At least 1 agent revises their signal after challenge
+# → Phase 3: Aggregator produces a Forecast with:
+#    - consensus_strength score reflecting actual agreement level
+#    - dissenting_view capturing the strongest counter-argument
+#    - debate_summary explaining what agents argued about
+# → Full run completes in <90 seconds
+```
+
+**Why This Is Hard:**
+- Debate prompts must be carefully designed to produce *substantive* challenges, not polite agreement. The system prompt must explicitly instruct agents to find flaws.
+- Convergence detection is nuanced — you don't want to stop debate too early (agents haven't genuinely engaged) or too late (circular arguments).
+- The aggregator must handle the 2-2 split case gracefully — this should produce a "low conviction" forecast, not a forced consensus.
+
+**Files:**
+```
+src/orchestrator/debate.py     ← NEW
+src/orchestrator/rounds.py     ← NEW
+src/signals/aggregation.py     ← NEW
+src/agents/aggregator.py       ← NEW
+src/signals/schema.py          ← MODIFY (add Challenge, Revision, Defense)
+src/orchestrator/swarm.py      ← MODIFY (integrate debate + aggregation into flow)
+```
+
+---
+
+### Phase 4 — MCP Data Servers (Days 13–16)
+
+**Goal:** Replace the direct API wrappers with MCP servers. This standardizes the data layer, makes tools reusable across agents, and demonstrates production-grade data architecture.
+
+**Build:**
+- `src/mcp/fred_server.py` — MCP server exposing FRED economic data:
+  - `get_series` — Fetch any FRED series by ID
+  - `get_rate_expectations` — Fed funds futures derived data
+  - `get_gdp_nowcast` — GDP tracking composite
+  - Built-in caching (1-hour TTL for economic data)
+- `src/mcp/market_server.py` — MCP server for market data:
+  - `get_price_data` — OHLCV with configurable intervals
+  - `get_technical_indicators` — Computed on-server (RSI, MACD, Bollinger)
+  - `get_volatility` — Historical and implied vol data
+  - `get_correlation_matrix` — Cross-asset correlations
+  - Built-in caching (1-minute TTL for price data)
+- `src/mcp/news_server.py` — MCP server for news and sentiment:
+  - `search_news` — Full-text news search with region/topic filters
+  - `get_sentiment_score` — Aggregated sentiment for an asset
+  - `get_social_buzz` — Social media mention volume and sentiment
+  - Built-in caching (15-minute TTL for news)
+- Refactor all agent tool definitions to use MCP server connections instead of direct API calls
+
+**Definition of Done:**
+```bash
+# Each MCP server runs standalone and is testable independently
+python -m src.mcp.fred_server    # Starts FRED MCP server
+python -m src.mcp.market_server  # Starts market data MCP server
+python -m src.mcp.news_server    # Starts news MCP server
+
+# Full forecast still works end-to-end with MCP backends
+python scripts/run_forecast.py --asset XAUUSD --horizon 30d
+# → Same output as Phase 3, but data flows through MCP servers
+# → Caching confirmed: second run within TTL shows cached responses
+```
+
+**Why MCP:**
+- Agents get a standardized tool interface — swap data providers without changing agent code
+- Caching lives in one place (the server), not scattered across tool functions
+- MCP servers are independently deployable and testable
+- Demonstrates to Isara's team that you understand production data infrastructure, not just prompt engineering
+
+**Files:**
+```
+src/mcp/__init__.py            ← NEW
+src/mcp/fred_server.py         ← NEW
+src/mcp/market_server.py       ← NEW
+src/mcp/news_server.py         ← NEW
+src/tools/market_data.py       ← MODIFY (delegate to MCP)
+src/tools/economic_indicators.py ← MODIFY (delegate to MCP)
+src/tools/news.py              ← MODIFY (delegate to MCP)
+src/tools/sentiment.py         ← MODIFY (delegate to MCP)
+```
+
+---
+
+### Phase 5 — Persistence, Backtesting & Calibration (Days 17–21)
+
+**Goal:** Make the system auditable. Every forecast run, every signal, every debate exchange is persisted. Build the backtesting harness that proves the swarm works on historical data. Begin tracking agent calibration.
+
+**Build:**
+- `src/persistence/database.py` — SQLite setup with async access (aiosqlite):
+  - `forecast_runs` table — One row per orchestration run (id, asset, horizon, timestamp, status)
+  - `signals` table — Every signal from every agent, linked to its run
+  - `debates` table — Challenge/revision pairs with full text
+  - `forecasts` table — Final aggregated forecast per run
+  - `calibration_log` table — Forecast vs. actual outcome for scoring
+- `src/persistence/models.py` — SQLAlchemy-style dataclass models (or raw SQL — keep it simple)
+- `src/signals/calibration.py` — Calibration tracker:
+  - For each agent, track (predicted_direction, confidence) vs actual outcome
+  - Compute calibration curve: group predictions by confidence bucket, measure actual hit rate
+  - Produce a `calibration_weight` per agent that the aggregator can use
+- `scripts/backtest.py` — Backtesting harness:
+  - Takes a date range and asset
+  - For each date, restricts all data tools to only serve data before that date (time-travel guard)
+  - Runs the full swarm pipeline
+  - Compares forecast to actual price movement
+  - Outputs a scorecard: directional accuracy, calibration score, Brier score, per-agent breakdown
+- `scripts/seed_data.py` — Seed the database with sample forecast runs for development
+
+**Definition of Done:**
+```bash
+# Run a backtest over 10 historical dates
+python scripts/backtest.py --asset XAUUSD --start 2025-01-01 --end 2025-10-01 --interval monthly
+# → Runs 10 forecast simulations
+# → Prints scorecard:
+#    Directional Accuracy: 7/10 (70%)
+#    Brier Score: 0.21
+#    Best Agent: quant (80% directional accuracy)
+#    Worst Agent: sentiment (50% directional accuracy)
+#    Calibration: macro agent overconfident (says 0.8, hits 0.6)
+
+# All runs persisted to SQLite
+python -c "import sqlite3; print(sqlite3.connect('data/forecasts.db').execute('SELECT COUNT(*) FROM forecast_runs').fetchone())"
+# → (10,)
+```
+
+**Key Design Decisions:**
+- SQLite, not Postgres. This is a single-user research tool, not a web app. Zero config, ships as a file.
+- Time-travel guard is critical for backtest integrity — if an agent can see future data, the backtest is meaningless
+- Calibration weights update slowly (exponential moving average) to avoid overreacting to small samples
+
+**Files:**
+```
+src/persistence/__init__.py    ← NEW
+src/persistence/database.py    ← NEW
+src/persistence/models.py      ← NEW
+src/signals/calibration.py     ← NEW
+scripts/backtest.py            ← NEW
+scripts/seed_data.py           ← NEW
+src/signals/aggregation.py     ← MODIFY (use calibration weights)
+src/orchestrator/swarm.py      ← MODIFY (persist runs, signals, debates)
+```
 
 ---
 
@@ -523,28 +706,22 @@ python -c "import sqlite3; conn = sqlite3.connect('data/forecasts.db'); [print(f
 
 **Goal:** Expose the swarm as an API. Any frontend, script, or external system can trigger forecasts, inspect signals, and replay debates over HTTP and WebSocket.
 
-**How it connects to existing code:**
-- Your routes call `run_swarm()` from `src/orchestrator/swarm.py` — this is the same function the CLI uses
-- `run_swarm()` returns a `SwarmResult` dataclass (see `swarm.py`). It has: `run_id`, `signals`, `debate_rounds`, `forecast`, `errors`, `elapsed_seconds`
-- For reading historical data, use the async functions in `src/persistence/database.py`: `list_runs()`, `get_run()`, `get_agent_calibration()`
-- The DB is already populated by the swarm (every `run_swarm(persist=True)` call writes to it). Your API just reads it back.
-- Add `fastapi` and `uvicorn` to `pyproject.toml` dependencies (uvicorn is already installed as a transitive dep)
-
 **Build:**
-- `src/api/main.py` — FastAPI app with CORS, error handling, lifespan hook that calls `init_db()`
+- `src/api/main.py` — FastAPI app with CORS, error handling, lifespan hooks (start MCP servers on boot)
 - `src/api/routes/forecasts.py`:
-  - `POST /forecasts` — Takes `{"asset": "XAUUSD", "horizon": "30d"}`. Calls `run_swarm()` in a background task. Returns `{"run_id": "...", "status": "running"}` immediately.
-  - `GET /forecasts/{id}` — Reads from `forecasts` table via `database.py`. Returns the full Forecast JSON.
-  - `GET /forecasts` — Calls `list_runs()` with optional `?asset=XAUUSD` filter.
+  - `POST /forecasts` — Trigger a new forecast run (asset, horizon). Returns run ID immediately, processes async.
+  - `GET /forecasts/{id}` — Get completed forecast with full signal chain and debate summary
+  - `GET /forecasts` — List all forecasts with pagination and filters (asset, date range, conviction level)
 - `src/api/routes/signals.py`:
-  - `GET /forecasts/{id}/signals` — Query `signals` table WHERE `run_id=id`
-  - `GET /forecasts/{id}/signals/{agent_id}` — Single agent's signal with evidence JSON
+  - `GET /forecasts/{id}/signals` — All agent signals for a specific run
+  - `GET /forecasts/{id}/signals/{agent_id}` — Single agent's signal with full evidence
 - `src/api/routes/runs.py`:
-  - `GET /runs` — List all runs from `forecast_runs` table
-  - `GET /runs/{id}/debate` — Query `debates` table WHERE `run_id=id`, return challenges + responses
+  - `GET /runs` — List all orchestration runs with status and timing
+  - `GET /runs/{id}/debate` — Full debate transcript for a run
+  - `GET /runs/{id}/trace` — Agent execution trace (timing, tool calls, token usage)
 - `src/api/routes/ws.py`:
-  - `WS /ws/forecast/{id}` — For live forecasts, you'll need to modify `run_swarm()` to accept a callback/queue that emits events as each phase completes. Use `asyncio.Queue` and have the WebSocket endpoint consume from it.
-- `src/api/deps.py` — `get_config()` dependency, DB path
+  - `WS /ws/forecast/{id}` — Live stream of forecast progress: agent completion events, debate rounds, final result
+- `src/api/deps.py` — Shared dependencies: database session, agent registry, config
 
 **Definition of Done:**
 ```bash
@@ -571,18 +748,6 @@ websocat ws://localhost:8000/ws/forecast/abc-123
 open http://localhost:8000/docs
 ```
 
-**DB queries you'll need** (add these to `database.py` if missing):
-```python
-# Get all signals for a run
-async def get_signals_for_run(run_id: str) -> list[dict]: ...
-
-# Get all debates for a run
-async def get_debates_for_run(run_id: str) -> list[dict]: ...
-
-# Get forecast for a run
-async def get_forecast_for_run(run_id: str) -> dict | None: ...
-```
-
 **Files:**
 ```
 src/api/__init__.py            ← NEW
@@ -593,8 +758,6 @@ src/api/routes/forecasts.py    ← NEW
 src/api/routes/signals.py      ← NEW
 src/api/routes/runs.py         ← NEW
 src/api/routes/ws.py           ← NEW
-src/persistence/database.py    ← MODIFY (add query functions for API reads)
-pyproject.toml                 ← MODIFY (add fastapi to deps)
 ```
 
 ---
@@ -603,28 +766,20 @@ pyproject.toml                 ← MODIFY (add fastapi to deps)
 
 **Goal:** A visual command center that makes the swarm's reasoning transparent. This is the demo layer — what you'd show in a meeting. Every forecast is explorable down to individual agent evidence.
 
-**How it connects to existing code:**
-- The frontend talks to your Phase 6 FastAPI backend. All data comes from the API.
-- Run `python -m scripts.seed_data` to populate the DB with 5 sample runs before starting frontend dev.
-- The TypeScript types in `frontend/lib/types.ts` should mirror the Pydantic models in `src/signals/schema.py`. Key shapes: `Signal`, `Evidence`, `Forecast`, `Challenge`, `Revision`.
-- The `SwarmResult` dataclass in `src/orchestrator/swarm.py` shows exactly what data is available per run.
-- Agent IDs are: `quant_analyst`, `geopolitical_analyst`, `macro_economist`, `sentiment_analyst`, `aggregator`.
-
 **Build:**
 - `frontend/` — Next.js 15 app with App Router, Tailwind CSS, shadcn/ui
 - **Dashboard Home** (`app/page.tsx`):
   - Active and recent forecasts in card layout
   - Each card: asset, direction arrow, conviction badge, consensus strength bar, timestamp
   - "New Forecast" button → modal with asset selector and horizon picker
-  - Asset options: XAUUSD, CL1, SPX, DXY, BTC, TLT (from `ASSET_TICKER_MAP` in `src/mcp/market_server.py`)
 - **Forecast Deep-Dive** (`app/forecast/[id]/page.tsx`):
   - Header: asset, direction, expected move, conviction, confidence interval
   - **Signal Panel** — 4-column layout, one per agent:
-    - Agent avatar and name (use distinct colors per agent)
+    - Agent avatar and name
     - Direction + confidence gauge
     - Evidence list (collapsible, with source links)
     - Risk factors
-    - Contrarian note (show only if non-null)
+    - Contrarian note
   - **Debate Replay** — Timeline visualization:
     - Each challenge rendered as a card with challenger → target
     - Revisions shown as before/after diffs on the signal
@@ -633,25 +788,15 @@ pyproject.toml                 ← MODIFY (add fastapi to deps)
     - X-axis: round number, Y-axis: confidence
     - Color-coded by agent
     - Highlights where convergence occurred
-    - Data comes from signals with `phase="initial"`, `phase="debate_r1"`, `phase="debate_r2"` in the signals table
   - **Price Chart** — Asset price with forecast overlay:
-    - Historical price line (use Lightweight Charts / TradingView widget)
+    - Historical price line (Lightweight Charts / TradingView widget)
     - Forecast direction and confidence band projected forward
     - Agent signal markers on the timeline
 - **Backtest History** (`app/runs/page.tsx`):
   - Table of all historical runs with accuracy scores
-  - Per-agent calibration charts (data from `GET /calibration/{agent_id}` — add this endpoint in Phase 6 if missing)
+  - Per-agent calibration charts
   - Brier score trend over time
   - Filter by asset, date range, conviction
-
-**Agent color scheme** (consistent across all components):
-```
-quant_analyst:       blue    (#3B82F6)
-geopolitical_analyst: red    (#EF4444)
-macro_economist:     green   (#22C55E)
-sentiment_analyst:   purple  (#A855F7)
-aggregator:          gold    (#EAB308)
-```
 
 **Component Breakdown:**
 ```
@@ -669,7 +814,7 @@ frontend/components/
 ```
 
 **Definition of Done:**
-- Dashboard loads and displays at least 3 historical forecast runs (seed with `scripts/seed_data.py`)
+- Dashboard loads and displays at least 3 historical forecast runs
 - Clicking a forecast card opens the deep-dive with all panels populated
 - Debate replay shows the actual exchange between agents (not placeholder text)
 - Convergence chart animates through rounds
@@ -695,14 +840,6 @@ frontend/lib/types.ts          ← NEW
 
 **Goal:** Make the system reliable, observable, and debuggable. No demo-quality shortcuts — this phase is what separates a toy from a tool.
 
-**How it connects to existing code:**
-- `src/orchestrator/swarm.py` already has basic timeout handling (`asyncio.wait_for` with `config.agent_timeout_seconds`). Extend it.
-- `src/orchestrator/debate.py` already catches exceptions per-agent and returns `None` on failure. Make this more robust.
-- The MCP servers in `src/mcp/` have simple dict-based caches. Add circuit breaker logic there.
-- The existing `_persist_*` functions in `swarm.py` are the right place to add trace/cost data.
-- Add `structlog` to `pyproject.toml` dependencies.
-- Agent timeout already works (60s default) — the improvement is graceful degradation (3/4 agents succeed = still produce forecast).
-
 **Build:**
 - **OpenAI Agents SDK Tracing** — Enable built-in trace collection for every agent run:
   - Tool call timing (which tools are slow, which fail)
@@ -713,21 +850,21 @@ frontend/lib/types.ts          ← NEW
   - Every log line includes `run_id`, `agent_id`, `phase` for filterability
   - Log levels: DEBUG (tool call details), INFO (phase transitions), WARN (timeouts, retries), ERROR (failures)
 - **Error Handling & Resilience:**
-  - `swarm.py` already handles timeouts and errors per agent — add a `degraded` flag to `SwarmResult` when <4 agents succeed
-  - API rate limit handling with exponential backoff in MCP servers
-  - Circuit breaker for external data APIs (if yfinance is down, return last cached data and set a `stale: true` flag)
-  - `debate.py` already skips failed challenges — add logging so you can see what failed and why
+  - Agent timeout enforcement: 60s per agent, graceful degradation (run forecast with 3/4 agents if one times out)
+  - API rate limit handling with exponential backoff
+  - Circuit breaker for external data APIs (if FRED is down, use cached data and flag staleness)
+  - Graceful fallback: if debate round fails, skip to aggregation with Round 0 signals
 - **Input Validation & Guardrails:**
-  - Validate asset symbols against `ASSET_TICKER_MAP` in `src/mcp/market_server.py`
-  - Output guardrail already exists: Signal.confidence is capped at 0.95 in schema.py
-  - Add an API-level validation: reject unknown assets before spawning the swarm
+  - Validate asset symbols against a known whitelist
+  - Reject signals with hallucinated evidence (cross-check cited data sources against actual tool call results)
+  - Output guardrail: reject forecasts with confidence >0.95 (nothing is that certain)
 - **Cost Tracking:**
-  - Add a `token_usage` column to `forecast_runs` table in `database.py`
-  - Use the Agents SDK's response metadata to capture tokens per agent
-  - Log estimated cost per forecast (GPT-4.1 pricing)
+  - Log tokens consumed per run, per agent, per phase
+  - Estimated cost per forecast (useful for pricing decisions)
+  - Alert threshold: warn if a single run exceeds $X
 
 **Definition of Done:**
-- A forecast run that encounters a yfinance outage still completes (degraded, flagged)
+- A forecast run that encounters a FRED API outage still completes (degraded, flagged)
 - One agent timing out doesn't block the swarm — the remaining 3 produce a forecast with a "reduced coverage" flag
 - Every run has a trace viewable in the SDK's trace viewer
 - Logs are structured and filterable: `cat logs/app.log | jq 'select(.agent_id == "quant")'`
@@ -735,14 +872,12 @@ frontend/lib/types.ts          ← NEW
 
 **Files:**
 ```
-src/orchestrator/swarm.py      ← MODIFY (degraded flag, tracing, cost tracking)
-src/orchestrator/debate.py     ← MODIFY (structured logging)
+src/orchestrator/swarm.py      ← MODIFY (timeouts, fallbacks, tracing)
+src/orchestrator/debate.py     ← MODIFY (graceful degradation)
 src/agents/*.py                ← MODIFY (structured logging in each agent)
-src/mcp/*.py                   ← MODIFY (circuit breakers, stale data flags)
+src/tools/*.py                 ← MODIFY (retry logic, circuit breakers)
 src/api/main.py                ← MODIFY (error middleware, request logging)
-src/persistence/database.py    ← MODIFY (token_usage column)
-src/config.py                  ← MODIFY (cost thresholds, logging config)
-pyproject.toml                 ← MODIFY (add structlog)
+src/config.py                  ← MODIFY (cost thresholds, timeouts config)
 ```
 
 ---

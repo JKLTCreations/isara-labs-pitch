@@ -1,0 +1,37 @@
+[project]
+name = "isara-swarm-forecaster"
+version = "0.1.0"
+description = "Multi-agent swarm forecaster using OpenAI Agents SDK"
+requires-python = ">=3.10"
+dependencies = [
+    "openai-agents>=0.0.7",
+    "openai>=1.60.0",
+    "pydantic>=2.0",
+    "yfinance>=0.2.40",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "aiosqlite>=0.20.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8.0",
+    "mypy>=1.13",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
