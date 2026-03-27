@@ -10,23 +10,37 @@ from src.orchestrator.rounds import compute_consensus_strength
 from src.signals.schema import Signal
 
 
-def aggregate_direction(signals: list[Signal]) -> tuple[str, float]:
+def aggregate_direction(
+    signals: list[Signal],
+    calibration_weights: dict[str, float] | None = None,
+) -> tuple[str, float]:
     """Compute confidence-weighted directional consensus.
+
+    Uses calibration weights when available to give better-calibrated
+    agents more influence over the final direction.
 
     Args:
         signals: Agent signals to aggregate.
+        calibration_weights: Optional dict of agent_id -> calibration_weight (0-1).
 
     Returns:
         Tuple of (direction, weighted_magnitude).
     """
     dir_map = {"bullish": 1.0, "bearish": -1.0, "neutral": 0.0}
-    total_weight = sum(s.confidence for s in signals)
+
+    def _weight(s: Signal) -> float:
+        cw = 1.0
+        if calibration_weights and s.agent_id in calibration_weights:
+            cw = calibration_weights[s.agent_id]
+        return s.confidence * cw
+
+    total_weight = sum(_weight(s) for s in signals)
 
     if total_weight == 0:
         return "neutral", 0.0
 
-    weighted_direction = sum(dir_map[s.direction] * s.confidence for s in signals) / total_weight
-    weighted_magnitude = sum(s.magnitude * s.confidence for s in signals) / total_weight
+    weighted_direction = sum(dir_map[s.direction] * _weight(s) for s in signals) / total_weight
+    weighted_magnitude = sum(s.magnitude * _weight(s) for s in signals) / total_weight
 
     if weighted_direction > 0.2:
         direction = "bullish"

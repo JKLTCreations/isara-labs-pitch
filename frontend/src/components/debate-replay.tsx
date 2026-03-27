@@ -7,69 +7,69 @@ import { ArrowRight, Shield, RefreshCw } from "lucide-react";
 export function DebateReplay({ debates }: { debates: Debate[] }) {
   if (debates.length === 0) {
     return (
-      <p className="text-sm text-[var(--text-muted)]">No debate exchanges recorded.</p>
+      <div className="flex flex-col items-center justify-center py-14 bg-[var(--bg-secondary)] border border-[var(--border)] shadow-[var(--shadow-sm)]">
+        <p className="text-[13px] text-[var(--text-tertiary)] font-light">
+          No debate exchanges recorded.
+        </p>
+      </div>
     );
   }
 
-  // Group by round
   const rounds: Record<number, Debate[]> = {};
   for (const d of debates) {
     (rounds[d.round_number] ??= []).push(d);
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-8">
       {Object.entries(rounds).map(([roundNum, exchanges]) => (
         <div key={roundNum}>
-          <h4 className="text-sm font-medium text-[var(--text-muted)] mb-3">
-            Round {roundNum}
-          </h4>
+          <div className="flex items-center gap-3 mb-4">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-[var(--accent)]">
+              Round {roundNum}
+            </span>
+            <div className="flex-1 h-px bg-[var(--border)]" />
+          </div>
           <div className="space-y-3">
             {exchanges.map((d) => {
-              const challengerMeta = agentMeta(d.challenger_id);
-              const targetMeta = agentMeta(d.target_id);
+              const challengerM = agentMeta(d.challenger_id);
+              const targetM = agentMeta(d.target_id);
               return (
                 <div
                   key={d.id}
-                  className="rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-4"
+                  className="group p-5 bg-[var(--bg-card)] border border-[var(--border)] shadow-[var(--shadow-sm)] transition-all duration-300 ease-out hover:bg-[var(--bg-tertiary)] hover:border-[var(--border-hover)] hover:translate-y-[-1px] hover:shadow-[var(--shadow-lg)]"
                 >
-                  {/* Header: challenger -> target */}
-                  <div className="flex items-center gap-2 mb-3">
+                  <div className="flex items-center gap-2.5 mb-4">
                     <AgentAvatar agentId={d.challenger_id} size="sm" />
-                    <ArrowRight size={14} className="text-[var(--text-muted)]" />
+                    <ArrowRight size={14} className="text-[var(--text-tertiary)] group-hover:text-[var(--accent-light)] transition-colors duration-300" />
                     <AgentAvatar agentId={d.target_id} size="sm" />
                   </div>
 
-                  {/* Challenge */}
-                  <div className="mb-3">
-                    <p className="text-xs font-medium mb-1" style={{ color: challengerMeta.color }}>
+                  <div className="mb-4 p-4 bg-[var(--bg-secondary)] border border-[var(--border)]">
+                    <p className="text-[10px] font-semibold uppercase tracking-widest mb-2" style={{ color: challengerM.color }}>
                       Challenge
                     </p>
-                    <p className="text-sm text-[var(--text)]">{d.argument}</p>
+                    <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed font-light">{d.argument}</p>
                     {d.evidence_gap && (
-                      <p className="text-xs text-[var(--text-muted)] mt-1">
-                        Evidence gap: {d.evidence_gap}
+                      <p className="text-[11px] text-[var(--text-tertiary)] mt-2 italic font-light">
+                        Gap: {d.evidence_gap}
                       </p>
                     )}
                   </div>
 
-                  {/* Response */}
                   {d.response_type && (
-                    <div className="border-t border-[var(--border)] pt-3">
-                      <div className="flex items-center gap-1 mb-1">
+                    <div className="p-4 bg-[var(--bg-secondary)] border border-[var(--border)]">
+                      <div className="flex items-center gap-2 mb-2">
                         {d.response_type === "defense" ? (
-                          <Shield size={12} className="text-blue-400" />
+                          <Shield size={13} className="text-[var(--blue)]" />
                         ) : (
-                          <RefreshCw size={12} className="text-yellow-400" />
+                          <RefreshCw size={13} className="text-[var(--yellow)]" />
                         )}
-                        <p
-                          className="text-xs font-medium"
-                          style={{ color: targetMeta.color }}
-                        >
+                        <p className="text-[10px] font-semibold uppercase tracking-widest" style={{ color: targetM.color }}>
                           {d.response_type === "defense" ? "Defended" : "Revised"}
                         </p>
                       </div>
-                      <p className="text-sm text-[var(--text)]">
+                      <p className="text-[13px] text-[var(--text-secondary)] leading-relaxed font-light">
                         {d.response_text}
                       </p>
                     </div>

@@ -180,8 +180,13 @@ async def list_forecasts(
     conviction: str | None = None,
     limit: int = 50,
     offset: int = 0,
+    dedupe: bool = True,
 ) -> dict:
-    """List all forecasts with pagination and filters."""
+    """List all forecasts with pagination and filters.
+
+    When dedupe=True (default), only the latest forecast per asset+horizon
+    is returned to avoid duplicate predictions on the dashboard.
+    """
     await db.init_db()
 
     forecasts = await db.list_forecasts(
@@ -194,6 +199,15 @@ async def list_forecasts(
         f["key_risks"] = json.loads(f.get("key_risks_json", "[]"))
         f.pop("key_drivers_json", None)
         f.pop("key_risks_json", None)
+
+    # Deduplicate: keep only the latest forecast per asset+horizon
+    if dedupe:
+        seen: dict[str, dict] = {}
+        for f in forecasts:
+            key = f"{f['asset']}:{f['horizon']}"
+            if key not in seen:
+                seen[key] = f
+        forecasts = list(seen.values())
 
     return {
         "forecasts": forecasts,
