@@ -14,6 +14,7 @@ from agents import Agent, Runner
 
 from src.agents.aggregator import build_aggregator_prompt, create_aggregator_agent
 from src.agents.registry import create_swarm
+from src.agents.triage import select_agents
 from src.config import get_config
 from src.logging import get_logger
 from src.orchestrator.debate import DebateRound, run_debate_round
@@ -182,11 +183,16 @@ async def run_swarm(
     asset: str,
     horizon: str = "30d",
     agent_ids: list[str] | None = None,
+    context: str | None = None,
     skip_debate: bool = False,
     skip_aggregation: bool = False,
     persist: bool = True,
 ) -> SwarmResult:
     """Run the full swarm pipeline: parallel analysis -> debate -> aggregation.
+
+    When no agent_ids are provided, the triage system selects the optimal
+    swarm composition based on the asset and optional context. This enables
+    dynamic agent selection (e.g., energy specialist for oil, china specialist for CNY).
 
     Graceful degradation: if some agents fail, the swarm continues with
     the remaining signals (minimum 2 required for debate).
@@ -194,7 +200,8 @@ async def run_swarm(
     Args:
         asset: Asset to forecast (e.g., 'XAUUSD', 'CL1', 'SPX').
         horizon: Forecast horizon (e.g., '7d', '30d', '90d').
-        agent_ids: Optional list of specific agents to run.
+        agent_ids: Optional list of specific agents to run. If None, triage selects.
+        context: Optional context string for triage agent selection.
         skip_debate: Skip debate rounds.
         skip_aggregation: Skip aggregation (signals only).
         persist: Whether to save results to the database.
@@ -213,6 +220,16 @@ async def run_swarm(
     horizon_err = validate_horizon(horizon)
     if horizon_err:
         return SwarmResult(asset=asset, horizon=horizon, errors=[horizon_err])
+
+    # Triage: select agents dynamically if not explicitly provided
+    if agent_ids is None:
+        agent_ids = select_agents(asset, context)
+        log.info(
+            "triage_selected",
+            asset=asset,
+            context=context,
+            selected_agents=agent_ids,
+        )
 
     agents = create_swarm(agent_ids)
     token_usage = TokenUsage(run_id="")
