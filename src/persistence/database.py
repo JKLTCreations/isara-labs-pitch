@@ -282,7 +282,7 @@ async def get_agent_calibration(agent_id: str, asset: str | None = None) -> dict
             )
 
     if not rows:
-        return {"agent_id": agent_id, "total": 0, "accuracy": None, "calibration": None}
+        return {"agent_id": agent_id, "total": 0, "accuracy": None, "calibration": None, "raw_predictions": []}
 
     total = len(rows)
     correct = sum(1 for _, c in rows if c == 1)
@@ -301,6 +301,9 @@ async def get_agent_calibration(agent_id: str, asset: str | None = None) -> dict
             "actual_accuracy": round(sum(outcomes) / len(outcomes), 3),
         }
 
+    # Raw predictions for Platt scaling
+    raw_predictions = [(float(conf), int(c)) for conf, c in rows]
+
     return {
         "agent_id": agent_id,
         "asset": asset,
@@ -308,6 +311,7 @@ async def get_agent_calibration(agent_id: str, asset: str | None = None) -> dict
         "correct": correct,
         "accuracy": round(accuracy, 3),
         "calibration_by_bucket": calibration,
+        "raw_predictions": raw_predictions,
     }
 
 
@@ -438,3 +442,25 @@ async def list_forecasts(
         params.extend([limit, offset])
         rows = await db.execute_fetchall(query, tuple(params))
         return [dict(r) for r in rows]
+
+
+async def get_all_calibration_profiles() -> list[dict]:
+    """Get calibration stats for all agents with scored predictions."""
+    async with aiosqlite.connect(str(DB_PATH)) as db:
+        db.row_factory = aiosqlite.Row
+        rows = await db.execute_fetchall(
+            """SELECT agent_id,
+                      COUNT(*) as total,
+                      SUM(correct) as correct_count,
+                      AVG(predicted_confidence) as avg_confidence
+               FROM calibration_log
+               WHERE correct IS NOT NULL
+               GROUP BY agent_id
+               ORDER BY agent_id"""
+        )
+        results = []
+        for row in rows:
+            r = dict(row)
+            r["accuracy"] = round(r["correct_count"] / r["total"], 3) if r["total"] > 0 else None
+            results.append(r)
+        return results
