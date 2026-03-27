@@ -89,3 +89,17 @@ export interface RunTrace {
   debate_exchanges: number;
   calibration_entries: number;
 }
+
+export interface CalibrationBucket {
+  count: number;
+  actual_accuracy: number;
+}
+
+export interface CalibrationProfile {
+  agent_id: string;
+  total_predictions: number;
+  overall_accuracy: number | null;
+  calibration_weight: number;
+  platt_params: [number, number] | null;
+  buckets: Record<string, CalibrationBucket>;
+}

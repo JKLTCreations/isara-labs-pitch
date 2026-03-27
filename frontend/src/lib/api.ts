@@ -1,4 +1,4 @@
-import type { ForecastDetail, Forecast, Run, RunTrace, Signal, Debate } from "./types";
+import type { ForecastDetail, Forecast, Run, RunTrace, Signal, Debate, CalibrationProfile } from "./types";
 
 const BASE = "/api";
 
@@ -86,4 +86,20 @@ export async function triggerForecast(params: {
     throw new Error(`API error ${res.status}: ${await res.text()}`);
   }
   return res.json();
+}
+
+// Calibration
+export async function getCalibrationDashboard(): Promise<{
+  profiles: CalibrationProfile[];
+  count: number;
+}> {
+  return fetchJSON("/runs/calibration");
+}
+
+export async function getAgentCalibration(
+  agentId: string,
+  asset?: string
+): Promise<CalibrationProfile> {
+  const qs = asset ? `?asset=${encodeURIComponent(asset)}` : "";
+  return fetchJSON(`/runs/calibration/${agentId}${qs}`);
 }

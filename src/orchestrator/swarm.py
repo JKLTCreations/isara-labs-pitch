@@ -20,7 +20,9 @@ from src.logging import get_logger
 from src.orchestrator.debate import DebateRound, run_debate_round
 from src.orchestrator.rounds import convergence_detected
 from src.persistence import database as db
+from src.persistence.memory import format_track_record_prompt, get_agent_track_record
 from src.resilience import TokenUsage, validate_asset, validate_horizon
+from src.signals.calibration import CalibrationProfile, get_calibration_profile
 from src.signals.schema import Forecast, Signal
 
 log = get_logger()
@@ -48,6 +50,7 @@ async def _run_single_agent(
     horizon: str,
     timeout: int,
     token_usage: TokenUsage | None = None,
+    track_record_text: str = "",
 ) -> Signal | str:
     """Run a single agent with timeout. Returns Signal or error string."""
     prompt = (
@@ -55,6 +58,8 @@ async def _run_single_agent(
         f"Use your tools to fetch current data, then emit a structured Signal. "
         f"Set agent_id to '{agent.name}'."
     )
+    if track_record_text:
+        prompt += f"\n{track_record_text}"
     agent_start = time.monotonic()
     try:
         result = await asyncio.wait_for(
@@ -254,9 +259,27 @@ async def run_swarm(
         phase="analysis",
     )
 
+    # === Phase 0: Fetch agent track records and calibration ===
+    track_records: dict[str, str] = {}
+    calibration_profiles: dict[str, CalibrationProfile] = {}
+    try:
+        for agent in agents:
+            record = await get_agent_track_record(agent.name, asset)
+            track_records[agent.name] = format_track_record_prompt(record)
+            calibration_profiles[agent.name] = await get_calibration_profile(agent.name, asset)
+    except Exception as e:
+        log.warning("track_record_fetch_failed", error=str(e))
+        # Non-fatal: continue without track records
+
     # === Phase 1: Independent Analysis (parallel) ===
     results = await asyncio.gather(
-        *[_run_single_agent(agent, asset, horizon, timeout, token_usage) for agent in agents],
+        *[
+            _run_single_agent(
+                agent, asset, horizon, timeout, token_usage,
+                track_record_text=track_records.get(agent.name, ""),
+            )
+            for agent in agents
+        ],
         return_exceptions=True,
     )
 
@@ -360,7 +383,10 @@ async def run_swarm(
         log.info("aggregation_started", run_id=run_id, signal_count=len(current_signals), phase="aggregation")
         try:
             aggregator = create_aggregator_agent()
-            aggregator_prompt = build_aggregator_prompt(current_signals, debate_rounds)
+            aggregator_prompt = build_aggregator_prompt(
+                current_signals, debate_rounds,
+                calibration_profiles=calibration_profiles if calibration_profiles else None,
+            )
 
             agg_result = await asyncio.wait_for(
                 Runner.run(aggregator, input=aggregator_prompt),

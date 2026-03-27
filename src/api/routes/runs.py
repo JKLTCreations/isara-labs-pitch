@@ -1,4 +1,4 @@
-"""Run routes — list orchestration runs and inspect debate transcripts."""
+"""Run routes — list orchestration runs, inspect debates, and view calibration."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 from fastapi import APIRouter, HTTPException
 
 from src.persistence import database as db
+from src.signals.calibration import get_calibration_profile
 
 router = APIRouter(prefix="/runs", tags=["runs"])
 
@@ -29,6 +30,49 @@ async def list_runs(
         "total": total,
         "limit": limit,
         "offset": offset,
+    }
+
+
+# Calibration routes MUST come before /{run_id} to avoid path collision
+@router.get("/calibration")
+async def get_calibration_dashboard() -> dict:
+    """Get calibration profiles for all agents with historical data."""
+    await db.init_db()
+
+    summaries = await db.get_all_calibration_profiles()
+
+    # Enrich with full calibration profiles
+    profiles = []
+    for summary in summaries:
+        agent_id = summary["agent_id"]
+        profile = await get_calibration_profile(agent_id)
+        profiles.append({
+            "agent_id": agent_id,
+            "total_predictions": profile.total_predictions,
+            "overall_accuracy": profile.overall_accuracy,
+            "calibration_weight": profile.calibration_weight,
+            "platt_params": profile.platt_params,
+            "buckets": profile.buckets,
+        })
+
+    return {"profiles": profiles, "count": len(profiles)}
+
+
+@router.get("/calibration/{agent_id}")
+async def get_agent_calibration_detail(agent_id: str, asset: str | None = None) -> dict:
+    """Get detailed calibration profile for a specific agent."""
+    await db.init_db()
+
+    profile = await get_calibration_profile(agent_id, asset)
+
+    return {
+        "agent_id": agent_id,
+        "asset": asset,
+        "total_predictions": profile.total_predictions,
+        "overall_accuracy": profile.overall_accuracy,
+        "calibration_weight": profile.calibration_weight,
+        "platt_params": profile.platt_params,
+        "buckets": profile.buckets,
     }
 
 
