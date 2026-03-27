@@ -9,6 +9,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from src.api.deps import emit_event, remove_run_queue
+from src.orchestrator.multi_swarm import run_multi_swarm
 from src.orchestrator.swarm import run_swarm
 from src.persistence import database as db
 
@@ -18,8 +19,10 @@ router = APIRouter(prefix="/forecasts", tags=["forecasts"])
 class ForecastRequest(BaseModel):
     asset: str = Field(description="Asset to forecast, e.g. XAUUSD, CL1, SPX")
     horizon: str = Field(default="30d", description="Forecast horizon, e.g. 7d, 30d, 90d")
-    agents: list[str] | None = Field(default=None, description="Specific agents to run")
+    agents: list[str] | None = Field(default=None, description="Specific agents to run (overrides triage)")
+    context: str | None = Field(default=None, description="Context for triage agent selection, e.g. 'election impact on gold'")
     skip_debate: bool = Field(default=False, description="Skip adversarial debate rounds")
+    correlated: bool = Field(default=False, description="Run parallel swarms for correlated assets")
 
 
 class ForecastTriggerResponse(BaseModel):
@@ -32,17 +35,46 @@ async def _run_forecast_task(
     asset: str,
     horizon: str,
     agents: list[str] | None,
+    context: str | None,
     skip_debate: bool,
+    correlated: bool,
 ) -> None:
     """Background task that runs the swarm and emits progress events."""
     try:
-        result = await run_swarm(
-            asset=asset,
-            horizon=horizon,
-            agent_ids=agents,
-            skip_debate=skip_debate,
-            persist=True,
-        )
+        if correlated:
+            multi_result = await run_multi_swarm(
+                asset=asset,
+                horizon=horizon,
+                context=context,
+                persist=True,
+            )
+            result = multi_result.primary_result
+
+            # Emit correlated results
+            for corr_asset, corr_result in multi_result.correlated_results.items():
+                if corr_result.forecast:
+                    await emit_event(run_id, {
+                        "event": "correlated_forecast",
+                        "asset": corr_asset,
+                        "forecast": corr_result.forecast.model_dump(),
+                    })
+
+            # Emit cross-swarm conflicts
+            if multi_result.cross_swarm_conflicts:
+                await emit_event(run_id, {
+                    "event": "cross_swarm_conflicts",
+                    "conflicts": multi_result.cross_swarm_conflicts,
+                    "notes": multi_result.correlation_notes,
+                })
+        else:
+            result = await run_swarm(
+                asset=asset,
+                horizon=horizon,
+                agent_ids=agents,
+                context=context,
+                skip_debate=skip_debate,
+                persist=True,
+            )
 
         # Emit agent completion events
         for signal in result.signals:
@@ -100,7 +132,9 @@ async def create_forecast(
         request.asset,
         request.horizon,
         request.agents,
+        request.context,
         request.skip_debate,
+        request.correlated,
     )
 
     return ForecastTriggerResponse(run_id=run_id, status="running")
