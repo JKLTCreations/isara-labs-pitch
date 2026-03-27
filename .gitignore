@@ -8,5 +8,6 @@ data/
 *.db
 .venv/
 node_modules/
+.npm-cache/
 .next/
 dist/
