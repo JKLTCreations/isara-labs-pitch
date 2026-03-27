@@ -2,6 +2,7 @@
 
 Exposes price data, technical indicators, volatility, and correlations
 via the Model Context Protocol. Built-in 1-minute cache for price data.
+Circuit breaker protects against sustained yfinance/network failures.
 
 Run standalone:
     python -m src.mcp.market_server
@@ -14,6 +15,7 @@ import time
 from datetime import datetime
 from functools import lru_cache
 
+import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
@@ -22,6 +24,51 @@ mcp = FastMCP("market-data", instructions="Real-time market data, technicals, an
 # Simple TTL cache
 _cache: dict[str, tuple[float, str]] = {}
 PRICE_CACHE_TTL = 60  # 1 minute
+
+# Circuit breaker state for yfinance
+_yf_failures: int = 0
+_yf_last_failure: float = 0.0
+_YF_FAILURE_THRESHOLD = 5
+_YF_RECOVERY_TIMEOUT = 120.0  # seconds
+
+
+def _yf_circuit_open() -> bool:
+    """Check if the yfinance circuit breaker is open."""
+    global _yf_failures, _yf_last_failure
+    if _yf_failures >= _YF_FAILURE_THRESHOLD:
+        if time.time() - _yf_last_failure < _YF_RECOVERY_TIMEOUT:
+            return True
+        # Half-open: reset and allow a probe
+        _yf_failures = 0
+    return False
+
+
+def _yf_record_success() -> None:
+    global _yf_failures
+    _yf_failures = 0
+
+
+def _yf_record_failure() -> None:
+    global _yf_failures, _yf_last_failure
+    _yf_failures += 1
+    _yf_last_failure = time.time()
+
+
+def _safe_fetch_history(ticker_symbol: str, period: str = "3mo") -> pd.DataFrame:
+    """Fetch yfinance history with circuit breaker protection.
+
+    Returns empty DataFrame if circuit is open or fetch fails.
+    On success, resets the circuit breaker.
+    """
+    if _yf_circuit_open():
+        return pd.DataFrame()
+    try:
+        hist = yf.Ticker(ticker_symbol).history(period=period)
+        _yf_record_success()
+        return hist
+    except Exception:
+        _yf_record_failure()
+        return pd.DataFrame()
 
 
 def _get_cached(key: str, ttl: int = PRICE_CACHE_TTL) -> str | None:
@@ -67,8 +114,7 @@ def get_price_data(asset: str, horizon: str = "30d") -> str:
     lookback = days * 3
     period = "1mo" if lookback <= 30 else "3mo" if lookback <= 90 else "6mo" if lookback <= 180 else "1y"
 
-    ticker = yf.Ticker(ticker_symbol)
-    hist = ticker.history(period=period)
+    hist = _safe_fetch_history(ticker_symbol, period=period)
 
     if hist.empty:
         return json.dumps({"error": f"No data for {asset} ({ticker_symbol})"})
@@ -120,7 +166,7 @@ def get_technical_indicators(asset: str, horizon: str = "30d") -> str:
         return cached
 
     ticker_symbol = _resolve(asset)
-    hist = yf.Ticker(ticker_symbol).history(period="6mo")
+    hist = _safe_fetch_history(ticker_symbol, period="6mo")
 
     if hist.empty or len(hist) < 26:
         return json.dumps({"error": f"Insufficient data for {asset}"})
@@ -202,7 +248,7 @@ def get_volatility(asset: str) -> str:
         return cached
 
     ticker_symbol = _resolve(asset)
-    hist = yf.Ticker(ticker_symbol).history(period="1y")
+    hist = _safe_fetch_history(ticker_symbol, period="1y")
 
     if hist.empty or len(hist) < 30:
         return json.dumps({"error": f"Insufficient data for {asset}"})
@@ -251,14 +297,13 @@ def get_correlation_matrix(assets: str, period: str = "3mo") -> str:
 
     price_data = {}
     for asset_name, ticker_symbol in tickers.items():
-        hist = yf.Ticker(ticker_symbol).history(period=period)
+        hist = _safe_fetch_history(ticker_symbol, period=period)
         if not hist.empty:
             price_data[asset_name] = hist["Close"]
 
     if len(price_data) < 2:
         return json.dumps({"error": "Need at least 2 assets with data"})
 
-    import pandas as pd
     df = pd.DataFrame(price_data).pct_change().dropna()
     corr = df.corr()
 

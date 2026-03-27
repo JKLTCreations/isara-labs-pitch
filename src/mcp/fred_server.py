@@ -13,6 +13,7 @@ import json
 import time
 from datetime import datetime
 
+import pandas as pd
 import yfinance as yf
 from mcp.server.fastmcp import FastMCP
 
@@ -20,6 +21,25 @@ mcp = FastMCP("fred-economic", instructions="Economic indicators, rates, inflati
 
 _cache: dict[str, tuple[float, str]] = {}
 ECON_CACHE_TTL = 3600  # 1 hour
+
+# Circuit breaker state
+_failures: int = 0
+_last_failure: float = 0.0
+
+
+def _safe_fetch(ticker_symbol: str, period: str = "3mo") -> pd.DataFrame:
+    """Fetch yfinance history with circuit breaker."""
+    global _failures, _last_failure
+    if _failures >= 5 and time.time() - _last_failure < 120:
+        return pd.DataFrame()
+    try:
+        hist = yf.Ticker(ticker_symbol).history(period=period)
+        _failures = 0
+        return hist
+    except Exception:
+        _failures += 1
+        _last_failure = time.time()
+        return pd.DataFrame()
 
 
 def _get_cached(key: str) -> str | None:
@@ -81,7 +101,7 @@ def get_series(series_id: str, period: str = "1y") -> str:
 
     if proxy:
         ticker_symbol, label = proxy
-        hist = yf.Ticker(ticker_symbol).history(period=period)
+        hist = _safe_fetch(ticker_symbol, period=period)
         if hist.empty:
             return json.dumps({"error": f"No data for {series_id} via {ticker_symbol}"})
 
@@ -138,7 +158,7 @@ def get_rate_expectations(currency: str = "USD") -> str:
 
     rates: dict[str, object] = {"currency": currency}
     for key, (symbol, label) in tickers.items():
-        hist = yf.Ticker(symbol).history(period="3mo")
+        hist = _safe_fetch(symbol, period="3mo")
         if not hist.empty:
             current = float(hist["Close"].iloc[-1])
             month_ago = float(hist["Close"].iloc[-22]) if len(hist) > 22 else float(hist["Close"].iloc[0])
@@ -182,8 +202,8 @@ def get_inflation_breakdown(country: str = "US") -> str:
 
     result_data: dict[str, object] = {"country": country}
 
-    tips_hist = yf.Ticker("TIP").history(period="6mo")
-    ief_hist = yf.Ticker("IEF").history(period="6mo")
+    tips_hist = _safe_fetch("TIP", period="6mo")
+    ief_hist = _safe_fetch("IEF", period="6mo")
     if not tips_hist.empty and not ief_hist.empty:
         tips_ret = (float(tips_hist["Close"].iloc[-1]) / float(tips_hist["Close"].iloc[0]) - 1) * 100
         ief_ret = (float(ief_hist["Close"].iloc[-1]) / float(ief_hist["Close"].iloc[0]) - 1) * 100
@@ -191,7 +211,7 @@ def get_inflation_breakdown(country: str = "US") -> str:
         result_data["nominal_treasury_6mo_return"] = round(ief_ret, 2)
         result_data["inflation_expectation_proxy"] = round(ief_ret - tips_ret, 2)
 
-    gold_hist = yf.Ticker("GC=F").history(period="6mo")
+    gold_hist = _safe_fetch("GC=F", period="6mo")
     if not gold_hist.empty:
         gold_ret = (float(gold_hist["Close"].iloc[-1]) / float(gold_hist["Close"].iloc[0]) - 1) * 100
         result_data["gold_6mo_return"] = round(gold_ret, 2)

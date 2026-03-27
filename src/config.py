@@ -28,6 +28,11 @@ class Config:
     agent_model: str = "gpt-4.1"
     fast_model: str = "gpt-4.1-mini"
 
+    # Resilience
+    max_cost_per_run_usd: float = 1.0  # Warn if a single run exceeds this
+    data_api_retry_attempts: int = 2
+    data_api_backoff_base: float = 1.0
+
     @classmethod
     def from_env(cls) -> Config:
         return cls(
@@ -42,6 +47,9 @@ class Config:
             agent_timeout_seconds=int(os.environ.get("AGENT_TIMEOUT_SECONDS", "60")),
             agent_model=os.environ.get("AGENT_MODEL", "gpt-4.1"),
             fast_model=os.environ.get("FAST_MODEL", "gpt-4.1-mini"),
+            max_cost_per_run_usd=float(os.environ.get("MAX_COST_PER_RUN_USD", "1.0")),
+            data_api_retry_attempts=int(os.environ.get("DATA_API_RETRY_ATTEMPTS", "2")),
+            data_api_backoff_base=float(os.environ.get("DATA_API_BACKOFF_BASE", "1.0")),
         )
 
     def validate(self) -> list[str]:
