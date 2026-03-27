@@ -88,12 +88,16 @@ async def run(
     # === Summary ===
     if verbose:
         print(f"\n=== RUN SUMMARY ===")
+        if result.run_id:
+            print(f"Run ID: {result.run_id}")
         print(f"Asset: {asset} | Horizon: {horizon}")
         print(f"Signals: {len(result.signals)} | Debate rounds: {len(result.debate_rounds)} | Errors: {len(result.errors)}")
         print(f"Elapsed: {result.elapsed_seconds}s")
         if result.forecast:
             f = result.forecast
             print(f"Forecast: {f.direction} | Conviction: {f.conviction} | Consensus: {f.consensus_strength:.2f}")
+        if result.run_id:
+            print(f"Persisted to: data/forecasts.db (run_id={result.run_id})")
 
 
 def main() -> None:
