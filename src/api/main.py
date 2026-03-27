@@ -34,7 +34,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(
-    title="Swarm Forecaster API",
+    title="Isara Labs API",
     description=(
         "Multi-agent adversarial forecasting engine. "
         "Trigger forecast runs, inspect agent signals, replay debates, "

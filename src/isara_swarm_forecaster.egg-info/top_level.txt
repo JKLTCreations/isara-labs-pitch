@@ -2,8 +2,10 @@ __init__
 agents
 api
 config
+logging
 mcp
 orchestrator
 persistence
+resilience
 signals
 tools

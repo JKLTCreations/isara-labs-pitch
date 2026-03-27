@@ -13,19 +13,22 @@ export function EvidenceList({ evidence }: { evidence: Evidence[] }) {
     <div>
       <button
         onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-xs font-medium text-[var(--text-muted)] hover:text-[var(--text)] transition-colors mb-1"
+        className="flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wider text-[var(--text-tertiary)] hover:text-[var(--accent-light)] transition-colors duration-300"
       >
-        {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
         Evidence ({evidence.length})
       </button>
       {expanded && (
-        <ul className="space-y-2 ml-3">
+        <ul className="space-y-2 mt-3">
           {evidence.map((e, i) => (
-            <li key={i} className="text-xs border-l-2 border-[var(--accent)] pl-2">
-              <p className="text-[var(--text)]">{e.observation}</p>
-              <div className="flex gap-3 text-[var(--text-muted)] mt-0.5">
-                <span>{e.source}</span>
-                <span>rel: {(e.relevance * 100).toFixed(0)}%</span>
+            <li
+              key={i}
+              className="text-[12px] p-3 bg-[var(--bg-secondary)] border-l-2 border-[var(--accent)] transition-colors duration-200 hover:bg-[var(--bg-tertiary)]"
+            >
+              <p className="text-[var(--text-secondary)] leading-relaxed font-light">{e.observation}</p>
+              <div className="flex gap-3 text-[var(--text-tertiary)] mt-1.5">
+                <span className="font-mono text-[10px] bg-[var(--bg-tertiary)] px-1.5 py-0.5">{e.source}</span>
+                <span className="tabular-nums text-[10px] font-light">rel: {(e.relevance * 100).toFixed(0)}%</span>
               </div>
             </li>
           ))}

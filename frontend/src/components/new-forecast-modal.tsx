@@ -28,28 +28,27 @@ export function NewForecastModal({
       const res = await triggerForecast({ asset, horizon });
       setResult(res);
     } catch {
-      // Error handled by clearing loading
+      // noop
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-      <div className="relative w-full max-w-md rounded-lg border border-[var(--border)] bg-[var(--bg-card)] p-6">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#061210]/85 backdrop-blur-lg">
+      <div className="relative w-full max-w-md bg-[var(--bg-secondary)] border border-[var(--border-hover)] p-8 shadow-[var(--shadow-xl)] fade-up">
         <button
           onClick={onClose}
-          className="absolute top-3 right-3 text-[var(--text-muted)] hover:text-[var(--text)]"
+          className="absolute top-5 right-5 w-8 h-8 flex items-center justify-center text-[var(--text-tertiary)] hover:text-[var(--cream)] hover:bg-[var(--accent-subtle)] transition-all duration-200"
         >
-          <X size={18} />
+          <X size={15} />
         </button>
 
-        <h2 className="text-lg font-semibold mb-4">New Forecast</h2>
+        <h2 className="text-lg font-semibold tracking-[-0.01em] text-[var(--cream)] mb-7">New Forecast</h2>
 
-        <div className="space-y-4">
-          {/* Asset */}
+        <div className="space-y-7">
           <div>
-            <label className="block text-sm text-[var(--text-muted)] mb-1">
+            <label className="block text-[10px] font-semibold uppercase tracking-widest text-[var(--text-tertiary)] mb-3">
               Asset
             </label>
             <div className="flex flex-wrap gap-2">
@@ -57,10 +56,10 @@ export function NewForecastModal({
                 <button
                   key={a}
                   onClick={() => setAsset(a)}
-                  className={`px-3 py-1.5 rounded text-sm border transition-colors ${
+                  className={`px-4 py-2 text-[13px] font-semibold transition-all duration-300 ${
                     asset === a
-                      ? "border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--text)]"
-                      : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)]"
+                      ? "bg-[var(--accent)] text-[var(--cream)] shadow-[var(--shadow-md)]"
+                      : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)] hover:border-[var(--border-hover)] hover:text-[var(--cream)] hover:translate-y-[-1px]"
                   }`}
                 >
                   {a}
@@ -69,9 +68,8 @@ export function NewForecastModal({
             </div>
           </div>
 
-          {/* Horizon */}
           <div>
-            <label className="block text-sm text-[var(--text-muted)] mb-1">
+            <label className="block text-[10px] font-semibold uppercase tracking-widest text-[var(--text-tertiary)] mb-3">
               Horizon
             </label>
             <div className="flex gap-2">
@@ -79,10 +77,10 @@ export function NewForecastModal({
                 <button
                   key={h}
                   onClick={() => setHorizon(h)}
-                  className={`px-3 py-1.5 rounded text-sm border transition-colors ${
+                  className={`px-4 py-2 text-[13px] font-semibold transition-all duration-300 ${
                     horizon === h
-                      ? "border-[var(--accent)] bg-[var(--accent)]/20 text-[var(--text)]"
-                      : "border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--text-muted)]"
+                      ? "bg-[var(--accent)] text-[var(--cream)] shadow-[var(--shadow-md)]"
+                      : "bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)] hover:border-[var(--border-hover)] hover:text-[var(--cream)] hover:translate-y-[-1px]"
                   }`}
                 >
                   {h}
@@ -91,25 +89,20 @@ export function NewForecastModal({
             </div>
           </div>
 
-          {/* Submit */}
           <button
             onClick={handleSubmit}
             disabled={loading}
-            className="w-full py-2 rounded bg-[var(--accent)] text-white font-medium text-sm hover:opacity-90 disabled:opacity-50 transition-opacity"
+            className="w-full py-3 text-[13px] font-semibold text-[var(--cream)] bg-[var(--accent)] shadow-[var(--shadow-md)] transition-all duration-300 ease-out hover:bg-[var(--accent-hover)] hover:shadow-[var(--shadow-lg)] hover:translate-y-[-1px] active:translate-y-0 disabled:opacity-50"
           >
             {loading ? "Running swarm..." : "Run Forecast"}
           </button>
 
-          {/* Result */}
           {result && (
-            <div className="p-3 rounded bg-green-500/10 border border-green-500/30 text-sm">
-              <p className="text-green-400 font-medium">Forecast triggered</p>
-              <p className="text-[var(--text-muted)] text-xs mt-1">
+            <div className="p-4 bg-[var(--green-subtle)] border-l-2 border-[var(--green)]">
+              <p className="text-[var(--green)] font-semibold text-[13px]">Forecast triggered</p>
+              <p className="text-[var(--text-tertiary)] text-[11px] mt-1 font-light">
                 Run ID:{" "}
-                <a
-                  href={`/forecast/${result.run_id}`}
-                  className="underline text-[var(--accent)]"
-                >
+                <a href={`/forecast/${result.run_id}`} className="text-[var(--accent-light)] hover:underline font-medium">
                   {result.run_id}
                 </a>
               </p>
