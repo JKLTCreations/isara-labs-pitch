@@ -47,6 +47,7 @@ async def _run_forecast_task(
                 horizon=horizon,
                 context=context,
                 persist=True,
+                run_id=run_id,
             )
             result = multi_result.primary_result
 
@@ -74,6 +75,7 @@ async def _run_forecast_task(
                 context=context,
                 skip_debate=skip_debate,
                 persist=True,
+                run_id=run_id,
             )
 
         # Emit agent completion events

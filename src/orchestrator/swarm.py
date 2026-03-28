@@ -192,6 +192,7 @@ async def run_swarm(
     skip_debate: bool = False,
     skip_aggregation: bool = False,
     persist: bool = True,
+    run_id: str | None = None,
 ) -> SwarmResult:
     """Run the full swarm pipeline: parallel analysis -> debate -> aggregation.
 
@@ -239,11 +240,13 @@ async def run_swarm(
     agents = create_swarm(agent_ids)
     token_usage = TokenUsage(run_id="")
 
-    # Initialize DB and create run record
-    run_id = ""
+    # Initialize DB; only create a new run record if no run_id was provided
+    if run_id is None:
+        run_id = ""
     if persist:
         await db.init_db()
-        run_id = await db.create_run(asset, horizon, len(agents))
+        if not run_id:
+            run_id = await db.create_run(asset, horizon, len(agents))
 
     token_usage.run_id = run_id
     start = time.monotonic()
