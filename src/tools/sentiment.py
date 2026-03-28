@@ -9,7 +9,9 @@ from agents import function_tool
 
 from src.mcp.news_server import (
     get_fear_greed_index as _mcp_fear_greed,
+    get_options_sentiment as _mcp_options,
     get_positioning as _mcp_positioning,
+    get_sector_rotation as _mcp_sectors,
     get_sentiment_score as _mcp_sentiment,
 )
 
@@ -50,3 +52,31 @@ def get_social_sentiment(asset: str, platform: str = "all") -> str:
     """
     # Reuse sentiment scoring as social proxy
     return _mcp_sentiment(asset=asset)
+
+
+@function_tool
+def get_options_sentiment() -> str:
+    """Get options market sentiment via VIX term structure and vol ETF flows.
+
+    VIX term structure reveals near-term vs medium-term fear. Volatility
+    ETF volume ratios show hedging activity. Backwardation = fear spike,
+    contango = complacency.
+
+    Returns:
+        JSON with VIX regime, term structure shape, vol ETF activity.
+    """
+    return _mcp_options()
+
+
+@function_tool
+def get_sector_rotation() -> str:
+    """Track sector rotation as a risk appetite signal.
+
+    Compares cyclical sectors (tech, discretionary, industrials) vs
+    defensive sectors (utilities, staples, healthcare). Cyclical leadership
+    = risk-on environment. Defensive leadership = risk-off.
+
+    Returns:
+        JSON with sector returns, rotation spread, risk regime.
+    """
+    return _mcp_sectors()
