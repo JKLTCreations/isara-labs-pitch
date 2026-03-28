@@ -295,5 +295,171 @@ def get_positioning(asset: str) -> str:
     return _set_cache(cache_key, result)
 
 
+@mcp.tool()
+def get_options_sentiment() -> str:
+    """Get options market sentiment via VIX term structure and volatility ETF flows.
+
+    VIX term structure (VIX vs VIX3M proxy) indicates whether fear is
+    near-term (backwardation) or complacent (contango). Volatility ETF
+    volume ratios reveal hedging activity.
+    """
+    cache_key = "options_sentiment"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    components: dict[str, object] = {}
+    scores: list[float] = []
+
+    # VIX current level and term structure proxy
+    vix_hist = _safe_fetch("^VIX", period="3mo")
+    if not vix_hist.empty:
+        vix_current = float(vix_hist["Close"].iloc[-1])
+        vix_20d_avg = float(vix_hist["Close"].tail(20).mean())
+        vix_5d_avg = float(vix_hist["Close"].tail(5).mean())
+        vix_percentile = float(
+            (vix_hist["Close"] < vix_current).sum() / len(vix_hist) * 100
+        )
+        components["vix"] = {
+            "current": round(vix_current, 1),
+            "20d_avg": round(vix_20d_avg, 1),
+            "5d_avg": round(vix_5d_avg, 1),
+            "percentile_3mo": round(vix_percentile, 0),
+            "regime": (
+                "extreme_fear" if vix_current > 30
+                else "elevated" if vix_current > 22
+                else "normal" if vix_current > 14
+                else "complacent"
+            ),
+        }
+        # Near-term vs medium-term vol: rising 5d vs 20d = near-term fear spike
+        term_spread = vix_5d_avg - vix_20d_avg
+        components["term_structure_proxy"] = {
+            "spread": round(term_spread, 2),
+            "shape": (
+                "backwardation" if term_spread > 1.0
+                else "contango" if term_spread < -1.0
+                else "flat"
+            ),
+            "interpretation": (
+                "near-term fear elevated — hedging demand spiking"
+                if term_spread > 1.0
+                else "near-term calm — market complacent"
+                if term_spread < -1.0
+                else "normal vol term structure"
+            ),
+        }
+        fear_score = max(0, min(100, (30 - vix_current) / 20 * 100))
+        scores.append(fear_score)
+
+    # Volatility ETF activity (UVXY = leveraged long vol, SVXY = short vol)
+    for symbol, name, direction in [("UVXY", "ProShares Ultra VIX", "fear"), ("SVXY", "ProShares Short VIX", "greed")]:
+        hist = _safe_fetch(symbol, period="3mo")
+        if not hist.empty:
+            recent_vol = float(hist["Volume"].tail(5).mean())
+            avg_vol = float(hist["Volume"].mean())
+            vol_ratio = recent_vol / avg_vol if avg_vol > 0 else 1.0
+            ret_5d = (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[-5]) - 1) * 100 if len(hist) > 5 else 0
+            components[f"{symbol.lower()}_activity"] = {
+                "name": name, "volume_ratio": round(vol_ratio, 2),
+                "5d_return_pct": round(ret_5d, 2),
+                "signal": (
+                    f"heavy_{direction}_hedging" if vol_ratio > 1.5
+                    else f"normal_{direction}_activity" if vol_ratio > 0.8
+                    else f"low_{direction}_activity"
+                ),
+            }
+
+    composite = sum(scores) / len(scores) if scores else 50.0
+    result = json.dumps({
+        "composite_score": round(composite, 0),
+        "label": (
+            "extreme_fear" if composite < 20 else "fear" if composite < 40
+            else "neutral" if composite < 60 else "greed" if composite < 80 else "extreme_greed"
+        ),
+        "components": components,
+        "source": "mcp:news-sentiment",
+        "timestamp": datetime.now().isoformat(),
+    })
+    return _set_cache(cache_key, result)
+
+
+@mcp.tool()
+def get_sector_rotation() -> str:
+    """Track sector rotation as a risk appetite signal.
+
+    Compares cyclical sectors (XLK tech, XLY consumer discretionary, XLI industrials)
+    vs defensive sectors (XLU utilities, XLP consumer staples, XLV healthcare).
+    Cyclical leadership = risk-on. Defensive leadership = risk-off.
+    """
+    cache_key = "sector_rotation"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    sectors = [
+        ("XLK", "Technology", "cyclical"),
+        ("XLY", "Consumer Discretionary", "cyclical"),
+        ("XLI", "Industrials", "cyclical"),
+        ("XLF", "Financials", "cyclical"),
+        ("XLU", "Utilities", "defensive"),
+        ("XLP", "Consumer Staples", "defensive"),
+        ("XLV", "Healthcare", "defensive"),
+        ("XLE", "Energy", "commodity"),
+        ("XLRE", "Real Estate", "rate_sensitive"),
+    ]
+
+    sector_data: list[dict[str, object]] = []
+    cyclical_returns: list[float] = []
+    defensive_returns: list[float] = []
+
+    for symbol, name, category in sectors:
+        hist = _safe_fetch(symbol, period="3mo")
+        if hist.empty:
+            continue
+        current = float(hist["Close"].iloc[-1])
+        month_ago = float(hist["Close"].iloc[-22]) if len(hist) > 22 else float(hist["Close"].iloc[0])
+        start = float(hist["Close"].iloc[0])
+        ret_1m = (current / month_ago - 1) * 100
+        ret_3m = (current / start - 1) * 100
+
+        sector_data.append({
+            "symbol": symbol, "name": name, "category": category,
+            "1mo_return_pct": round(ret_1m, 2),
+            "3mo_return_pct": round(ret_3m, 2),
+        })
+
+        if category == "cyclical":
+            cyclical_returns.append(ret_1m)
+        elif category == "defensive":
+            defensive_returns.append(ret_1m)
+
+    avg_cyclical = sum(cyclical_returns) / len(cyclical_returns) if cyclical_returns else 0
+    avg_defensive = sum(defensive_returns) / len(defensive_returns) if defensive_returns else 0
+    rotation_spread = avg_cyclical - avg_defensive
+
+    # Sort by 1mo return to show leadership
+    sector_data.sort(key=lambda x: x["1mo_return_pct"], reverse=True)  # type: ignore[arg-type]
+
+    result = json.dumps({
+        "sectors": sector_data,
+        "avg_cyclical_1mo": round(avg_cyclical, 2),
+        "avg_defensive_1mo": round(avg_defensive, 2),
+        "rotation_spread": round(rotation_spread, 2),
+        "regime": (
+            "strong_risk_on" if rotation_spread > 3
+            else "risk_on" if rotation_spread > 1
+            else "risk_off" if rotation_spread < -1
+            else "strong_risk_off" if rotation_spread < -3
+            else "neutral"
+        ),
+        "leading_sectors": [s["name"] for s in sector_data[:3]],
+        "lagging_sectors": [s["name"] for s in sector_data[-3:]],
+        "source": "mcp:news-sentiment",
+        "timestamp": datetime.now().isoformat(),
+    })
+    return _set_cache(cache_key, result)
+
+
 if __name__ == "__main__":
     mcp.run()

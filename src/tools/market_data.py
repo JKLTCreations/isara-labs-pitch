@@ -9,6 +9,7 @@ from agents import function_tool
 
 from src.mcp.market_server import (
     get_correlation_matrix as _mcp_corr,
+    get_cross_asset_momentum as _mcp_xmom,
     get_price_data as _mcp_price,
     get_technical_indicators as _mcp_tech,
     get_volatility as _mcp_vol,
@@ -68,3 +69,20 @@ def get_correlation_matrix(assets: str, period: str = "3mo") -> str:
         JSON string with correlation matrix and notable pairs.
     """
     return _mcp_corr(assets=assets, period=period)
+
+
+@function_tool
+def get_cross_asset_momentum(asset: str, period: str = "3mo") -> str:
+    """Compute relative performance of an asset vs its peer group.
+
+    Identifies regime shifts by comparing returns against related benchmarks.
+    Outperformance vs peers = strong momentum regime. Underperformance = weak.
+
+    Args:
+        asset: Primary asset (e.g., 'XAUUSD', 'CL1', 'SPX', 'BTC').
+        period: Lookback period ('1mo', '3mo', '6mo').
+
+    Returns:
+        JSON with relative performance vs peers, regime classification.
+    """
+    return _mcp_xmom(asset=asset, period=period)

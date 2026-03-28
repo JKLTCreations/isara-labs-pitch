@@ -223,5 +223,143 @@ def get_inflation_breakdown(country: str = "US") -> str:
     return _set_cache(cache_key, result)
 
 
+@mcp.tool()
+def get_credit_spreads() -> str:
+    """Get credit spread proxies as a risk appetite indicator.
+
+    Compares high-yield bonds (HYG) vs investment-grade (LQD) and treasuries (IEF).
+    Widening spreads = risk-off / stress. Tightening spreads = risk-on / complacency.
+    """
+    cache_key = "credit_spreads"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    tickers = {
+        "hyg": ("HYG", "iShares High Yield Corp Bond"),
+        "lqd": ("LQD", "iShares Investment Grade Corp Bond"),
+        "ief": ("IEF", "iShares 7-10Y Treasury"),
+    }
+
+    data: dict[str, dict[str, object]] = {}
+    for key, (symbol, label) in tickers.items():
+        hist = _safe_fetch(symbol, period="6mo")
+        if not hist.empty:
+            current = float(hist["Close"].iloc[-1])
+            month_ago = float(hist["Close"].iloc[-22]) if len(hist) > 22 else float(hist["Close"].iloc[0])
+            start = float(hist["Close"].iloc[0])
+            data[key] = {
+                "label": label, "current": round(current, 2),
+                "1mo_return": round((current / month_ago - 1) * 100, 2),
+                "6mo_return": round((current / start - 1) * 100, 2),
+            }
+
+    result_data: dict[str, object] = {"indicators": data}
+
+    if "hyg" in data and "lqd" in data:
+        hyg_1m = data["hyg"]["1mo_return"]
+        lqd_1m = data["lqd"]["1mo_return"]
+        spread_change = hyg_1m - lqd_1m  # type: ignore[operator]
+        result_data["hy_vs_ig_1mo"] = round(spread_change, 2)  # type: ignore[arg-type]
+        result_data["credit_risk_signal"] = (
+            "risk_on" if spread_change > 0.5  # type: ignore[operator]
+            else "risk_off" if spread_change < -0.5  # type: ignore[operator]
+            else "neutral"
+        )
+
+    if "hyg" in data and "ief" in data:
+        hyg_1m = data["hyg"]["1mo_return"]
+        ief_1m = data["ief"]["1mo_return"]
+        excess = hyg_1m - ief_1m  # type: ignore[operator]
+        result_data["hy_vs_treasury_1mo"] = round(excess, 2)  # type: ignore[arg-type]
+        result_data["spread_direction"] = (
+            "tightening" if excess > 0.3  # type: ignore[operator]
+            else "widening" if excess < -0.3  # type: ignore[operator]
+            else "stable"
+        )
+
+    result_data["source"] = "mcp:fred-economic"
+    result_data["timestamp"] = datetime.now().isoformat()
+    result = json.dumps(result_data)
+    return _set_cache(cache_key, result)
+
+
+@mcp.tool()
+def get_treasury_curve() -> str:
+    """Get detailed treasury yield curve shape using multiple maturity proxies.
+
+    Provides short/mid/long rates, curve slope, real rate estimates via TIPS,
+    and term premium signals. Essential for macro regime identification.
+    """
+    cache_key = "treasury_curve"
+    cached = _get_cached(cache_key)
+    if cached:
+        return cached
+
+    curve_tickers = {
+        "short_rate": ("^IRX", "13-Week T-Bill"),
+        "10y_yield": ("^TNX", "10-Year Treasury"),
+        "30y_yield": ("^TYX", "30-Year Treasury"),
+        "tips_etf": ("TIP", "TIPS ETF"),
+        "long_treasury": ("TLT", "20+ Year Treasury ETF"),
+    }
+
+    rates: dict[str, dict[str, object]] = {}
+    for key, (symbol, label) in curve_tickers.items():
+        hist = _safe_fetch(symbol, period="6mo")
+        if not hist.empty:
+            current = float(hist["Close"].iloc[-1])
+            month_ago = float(hist["Close"].iloc[-22]) if len(hist) > 22 else float(hist["Close"].iloc[0])
+            six_mo_ago = float(hist["Close"].iloc[0])
+            rates[key] = {
+                "label": label, "current": round(current, 3),
+                "month_ago": round(month_ago, 3),
+                "1mo_change": round(current - month_ago, 3),
+                "6mo_change": round(current - six_mo_ago, 3),
+                "trend": "rising" if current > month_ago else "falling",
+            }
+
+    result_data: dict[str, object] = {"rates": rates}
+
+    if "short_rate" in rates and "10y_yield" in rates:
+        short = rates["short_rate"]["current"]
+        ten_y = rates["10y_yield"]["current"]
+        spread = ten_y - short  # type: ignore[operator]
+        result_data["curve_2s10s_proxy"] = round(spread, 3)  # type: ignore[arg-type]
+        result_data["curve_shape"] = (
+            "deeply_inverted" if spread < -0.5  # type: ignore[operator]
+            else "inverted" if spread < 0  # type: ignore[operator]
+            else "flat" if spread < 0.5  # type: ignore[operator]
+            else "normal" if spread < 1.5  # type: ignore[operator]
+            else "steep"
+        )
+
+    if "10y_yield" in rates and "30y_yield" in rates:
+        ten = rates["10y_yield"]["current"]
+        thirty = rates["30y_yield"]["current"]
+        long_spread = thirty - ten  # type: ignore[operator]
+        result_data["long_end_slope"] = round(long_spread, 3)  # type: ignore[arg-type]
+        result_data["term_premium_signal"] = (
+            "positive" if long_spread > 0.3  # type: ignore[operator]
+            else "compressed" if long_spread < 0  # type: ignore[operator]
+            else "neutral"
+        )
+
+    if "tips_etf" in rates and "long_treasury" in rates:
+        tips_chg = rates["tips_etf"]["1mo_change"]
+        tlt_chg = rates["long_treasury"]["1mo_change"]
+        result_data["real_rate_proxy_1mo"] = round(tlt_chg - tips_chg, 3)  # type: ignore[operator, arg-type]
+        result_data["inflation_expectations_shift"] = (
+            "rising" if tips_chg > tlt_chg  # type: ignore[operator]
+            else "falling" if tips_chg < tlt_chg  # type: ignore[operator]
+            else "stable"
+        )
+
+    result_data["source"] = "mcp:fred-economic"
+    result_data["timestamp"] = datetime.now().isoformat()
+    result = json.dumps(result_data)
+    return _set_cache(cache_key, result)
+
+
 if __name__ == "__main__":
     mcp.run()

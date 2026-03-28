@@ -328,5 +328,76 @@ def get_correlation_matrix(assets: str, period: str = "3mo") -> str:
     return _set_cache(cache_key, result)
 
 
+@mcp.tool()
+def get_cross_asset_momentum(asset: str, period: str = "3mo") -> str:
+    """Compute relative performance of an asset vs related benchmarks.
+
+    Useful for identifying regime shifts: is this asset outperforming or
+    underperforming its peer group? Divergences signal potential reversals.
+
+    Args:
+        asset: Primary asset (e.g. XAUUSD, CL1, SPX, BTC).
+        period: Lookback period (1mo, 3mo, 6mo).
+    """
+    cache_key = f"xmomentum:{asset}:{period}"
+    cached = _get_cached(cache_key, ttl=300)
+    if cached:
+        return cached
+
+    # Define peer groups by asset class
+    peer_map: dict[str, list[tuple[str, str]]] = {
+        "XAUUSD": [("SI=F", "Silver"), ("DX-Y.NYB", "USD Index"), ("TLT", "Long Treasuries"), ("^GSPC", "S&P 500")],
+        "gold": [("SI=F", "Silver"), ("DX-Y.NYB", "USD Index"), ("TLT", "Long Treasuries"), ("^GSPC", "S&P 500")],
+        "CL1": [("NG=F", "Natural Gas"), ("XLE", "Energy Sector"), ("^GSPC", "S&P 500"), ("DX-Y.NYB", "USD Index")],
+        "oil": [("NG=F", "Natural Gas"), ("XLE", "Energy Sector"), ("^GSPC", "S&P 500"), ("DX-Y.NYB", "USD Index")],
+        "SPX": [("^IXIC", "Nasdaq"), ("^RUT", "Russell 2000"), ("EFA", "Intl Developed"), ("EEM", "Emerging Markets")],
+        "BTC": [("^GSPC", "S&P 500"), ("GC=F", "Gold"), ("^IXIC", "Nasdaq"), ("TLT", "Long Treasuries")],
+        "DXY": [("GC=F", "Gold"), ("EEM", "Emerging Markets"), ("^TNX", "10Y Yield"), ("^GSPC", "S&P 500")],
+        "TLT": [("GC=F", "Gold"), ("^TNX", "10Y Yield"), ("HYG", "High Yield"), ("^GSPC", "S&P 500")],
+    }
+
+    peers = peer_map.get(asset, [("^GSPC", "S&P 500"), ("GC=F", "Gold"), ("DX-Y.NYB", "USD Index")])
+
+    primary_ticker = _resolve(asset)
+    primary_hist = _safe_fetch_history(primary_ticker, period=period)
+    if primary_hist.empty:
+        return json.dumps({"error": f"No data for {asset}"})
+
+    primary_ret = (float(primary_hist["Close"].iloc[-1]) / float(primary_hist["Close"].iloc[0]) - 1) * 100
+
+    comparisons: list[dict[str, object]] = []
+    for ticker, label in peers:
+        hist = _safe_fetch_history(ticker, period=period)
+        if hist.empty:
+            continue
+        ret = (float(hist["Close"].iloc[-1]) / float(hist["Close"].iloc[0]) - 1) * 100
+        relative = primary_ret - ret
+        comparisons.append({
+            "asset": label, "ticker": ticker,
+            "return_pct": round(ret, 2),
+            "relative_to_primary": round(relative, 2),
+            "signal": "outperforming" if relative > 2 else "underperforming" if relative < -2 else "inline",
+        })
+
+    outperforming = sum(1 for c in comparisons if c["signal"] == "outperforming")
+    underperforming = sum(1 for c in comparisons if c["signal"] == "underperforming")
+
+    result = json.dumps({
+        "asset": asset, "period": period,
+        "primary_return_pct": round(primary_ret, 2),
+        "comparisons": comparisons,
+        "regime": (
+            "strong_relative_momentum" if outperforming >= 3
+            else "weak_relative_momentum" if underperforming >= 3
+            else "mixed_signals"
+        ),
+        "outperforming_count": outperforming,
+        "underperforming_count": underperforming,
+        "source": "mcp:market-data",
+        "timestamp": datetime.now().isoformat(),
+    })
+    return _set_cache(cache_key, result)
+
+
 if __name__ == "__main__":
     mcp.run()

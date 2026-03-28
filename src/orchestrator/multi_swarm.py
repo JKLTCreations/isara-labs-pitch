@@ -132,6 +132,7 @@ async def run_multi_swarm(
     horizon: str = "30d",
     context: str | None = None,
     persist: bool = True,
+    run_id: str | None = None,
 ) -> MultiSwarmResult:
     """Run parallel swarms for an asset and its correlated assets.
 
@@ -162,17 +163,19 @@ async def run_multi_swarm(
     )
 
     # Run all swarms in parallel
-    async def _run_single(target_asset: str) -> tuple[str, SwarmResult]:
+    async def _run_single(target_asset: str, existing_run_id: str | None = None) -> tuple[str, SwarmResult]:
         agent_ids = select_agents(target_asset, context)
         result = await run_swarm(
             asset=target_asset,
             horizon=horizon,
             agent_ids=agent_ids,
             persist=persist,
+            run_id=existing_run_id,
         )
         return target_asset, result
 
-    tasks = [_run_single(a) for a in [asset] + other_assets]
+    # Pass the existing run_id only for the primary asset to avoid duplicate runs
+    tasks = [_run_single(asset, existing_run_id=run_id)] + [_run_single(a) for a in other_assets]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     # Separate primary from correlated results
